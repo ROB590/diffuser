@@ -9,14 +9,14 @@ import diffuser.utils as utils
 
 
 class Parser(utils.Parser):
-    dataset: str = 'maze2d-umaze-v1'
+    dataset: str = 'maze2d-large-v1'
     config: str = 'config.maze2d'
 
 #---------------------------------- setup ----------------------------------#
 
 args = Parser().parse_args('plan')
 
-# logger = utils.Logger(args)
+#logger = utils.Logger(args)
 
 env = datasets.load_environment(args.dataset)
 
@@ -32,7 +32,7 @@ policy = Policy(diffusion, dataset.normalizer)
 
 #---------------------------------- main loop ----------------------------------#
 
-observation = env.reset()
+observation = env.reset(seed = 42)
 
 if args.conditional:
     print('Resetting target')
@@ -60,7 +60,7 @@ for t in range(env.max_episode_steps):
         action, samples = policy(cond, batch_size=args.batch_size)
         actions = samples.actions[0]
         sequence = samples.observations[0]
-    # pdb.set_trace()
+    #pdb.set_trace()
 
     # ####
     if t < len(sequence) - 1:
@@ -68,11 +68,11 @@ for t in range(env.max_episode_steps):
     else:
         next_waypoint = sequence[-1].copy()
         next_waypoint[2:] = 0
-        # pdb.set_trace()
+        #pdb.set_trace()
 
     ## can use actions or define a simple controller based on state predictions
     action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
-    # pdb.set_trace()
+    #pdb.set_trace()
     ####
 
     # else:
@@ -112,21 +112,21 @@ for t in range(env.max_episode_steps):
         if t == 0: renderer.composite(fullpath, samples.observations, ncol=1)
 
 
-        # renderer.render_plan(join(args.savepath, f'{t}_plan.mp4'), samples.actions, samples.observations, state)
+        #renderer.render_plan(join(args.savepath, f'{t}_plan.mp4'), samples.actions, samples.observations, state)
 
         ## save rollout thus far
         renderer.composite(join(args.savepath, 'rollout.png'), np.array(rollout)[None], ncol=1)
 
         # renderer.render_rollout(join(args.savepath, f'rollout.mp4'), rollout, fps=80)
 
-        # logger.video(rollout=join(args.savepath, f'rollout.mp4'), plan=join(args.savepath, f'{t}_plan.mp4'), step=t)
+       # logger.video(rollout=join(args.savepath, f'rollout.mp4'), plan=join(args.savepath, f'{t}_plan.mp4'), step=t)
 
     if terminal:
         break
 
     observation = next_observation
 
-# logger.finish(t, env.max_episode_steps, score=score, value=0)
+#logger.finish(t, env.max_episode_steps, score=score, value=0)
 
 ## save result as a json file
 json_path = join(args.savepath, 'rollout.json')
