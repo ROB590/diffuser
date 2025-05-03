@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 from os.path import join
-
+import gym
 import math
 import random
 import numpy as np
@@ -10,7 +10,7 @@ from heapq import heappush, heappop
 
 import diffuser.datasets as datasets
 import diffuser.utils as utils   # Maze2dRenderer comes from here
-
+from gym.envs.registration import register
 # ----------------------------
 # 1. A* 搜索（不变）
 # ----------------------------
@@ -22,7 +22,7 @@ def to_cell(pt):
 def cell_to_world(cell):
     # if each grid cell is 1×1 in world units and origin at (0,0):
     i, j = cell
-    return np.array([j + 0.5, i + 0.5])
+    return np.array([i + 0.5, j + 0.5])
 def astar(grid: np.ndarray, start: tuple, goal: tuple):
     """
     Find shortest path on a 4-connected grid from start to goal using A*.
@@ -156,7 +156,36 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     # 加载环境 & 渲染器
-    env = datasets.load_environment(args.dataset)
+    env = datasets.load_environment(args.dataset)  
+    # custom_ascii = \
+    # "############\\"+\
+    # "#OOOOO#OOOO#\\"+\
+    # "#OO##O##OO##\\"+\
+    # "#O##OOO##O##\\"+\
+    # "#OOOOG#OOOO#\\"+\
+    # "#O##OOOO#O##\\"+\
+    # "##O##O#OOO##\\"+\
+    # "#OOOOOOOOOO#\\"+\
+    # "############"
+
+    # name = 'CustomMaze2D-v0'
+    # register(
+    #     id=name,
+    #     entry_point='d4rl.pointmaze.maze_model:MazeEnv',
+    #     kwargs={
+    #         'maze_spec': custom_ascii,
+    #         'reward_type': 'dense',
+    #         'reset_target': True
+    #     }
+    # )
+
+    # env = gym.make('CustomMaze2D-v0')
+    # env = env.unwrapped
+    # max_episode_steps = 800 # FIXME hard code here
+    # env.max_episode_steps = max_episode_steps
+    # env.name = name
+
+    
     renderer = utils.Maze2dRenderer(args.dataset)
 
     # 1) overwrite start & goal
@@ -257,18 +286,19 @@ def main():
             break
 
     # 3) Summary
-    score = env.get_normalized_score(total_r)
+    #score = env.get_normalized_score(total_r)
     result = {
         'planner': args.planner,
         'dataset': args.dataset,
         'return': float(total_r),
-        'score': float(score),
+        #'score': float(score),
         'steps': len(rollout)-1,
     }
     with open(join(args.out_dir, 'result.json'), 'w') as f:
         json.dump(result, f, indent=2, sort_keys=True)
 
-    print(f"完成！ return={total_r:.2f}, score={score:.3f}, steps={len(rollout)-1}")
+    #print(f"完成！ return={total_r:.2f}, score={score:.3f}, steps={len(rollout)-1}")
+    print(f"完成！ return={total_r:.2f}, steps={len(rollout)-1}")
 
 if __name__ == '__main__':
     main()
