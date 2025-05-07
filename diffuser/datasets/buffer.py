@@ -1,5 +1,5 @@
 import numpy as np
-
+np.int = int
 def atleast_2d(x):
     while x.ndim < 2:
         x = np.expand_dims(x, axis=-1)
