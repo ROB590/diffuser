@@ -80,10 +80,11 @@ class SequenceDataset(torch.utils.data.Dataset):
         path_ind, start, end = self.indices[idx]
 
         observations = self.fields.normed_observations[path_ind, start:end]
-        actions = self.fields.normed_actions[path_ind, start:end]
+        #actions = self.fields.normed_actions[path_ind, start:end]
 
         conditions = self.get_conditions(observations)
-        trajectories = np.concatenate([actions, observations], axis=-1)
+        #trajectories = np.concatenate([actions, observations], axis=-1)
+        trajectories = observations.copy()
         batch = Batch(trajectories, conditions)
         return batch
 

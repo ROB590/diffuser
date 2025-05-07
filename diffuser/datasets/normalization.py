@@ -2,7 +2,7 @@ import numpy as np
 import scipy.interpolate as interpolate
 import pdb
 
-POINTMASS_KEYS = ['observations', 'actions', 'next_observations', 'deltas']
+POINTMASS_KEYS = ['observations', 'next_observations', 'deltas'] #no actions
 
 #-----------------------------------------------------------------------------#
 #--------------------------- multi-field normalizer --------------------------#
@@ -14,12 +14,16 @@ class DatasetNormalizer:
         dataset = flatten(dataset, path_lengths)
 
         self.observation_dim = dataset['observations'].shape[1]
-        self.action_dim = dataset['actions'].shape[1]
+        print('dataset observation_dim',self.observation_dim)
+        #self.action_dim = dataset['actions'].shape[1]
+        self.action_dim = 0
 
         if type(normalizer) == str:
             normalizer = eval(normalizer)
 
         self.normalizers = {}
+        print("Debug")
+        print(dataset.keys())
         for key, val in dataset.items():
             try:
                 self.normalizers[key] = normalizer(val)
@@ -27,6 +31,11 @@ class DatasetNormalizer:
                 print(f'[ utils/normalization ] Skipping {key} | {normalizer}')
             # key: normalizer(val)
             # for key, val in dataset.items()
+        # Force dim correct
+        for key, norm in self.normalizers.items():
+            # only keep the first observation_dim entries
+            norm.mins = norm.mins[:self.observation_dim]
+            norm.maxs = norm.maxs[:self.observation_dim]
 
     def __repr__(self):
         string = ''
@@ -71,8 +80,8 @@ class PointMassDatasetNormalizer(DatasetNormalizer):
             reshaped[key] = val.reshape(-1, dim)
 
         self.observation_dim = reshaped['observations'].shape[1]
-        self.action_dim = reshaped['actions'].shape[1]
-
+        #self.action_dim = reshaped['actions'].shape[1]
+        self.action_dim = 0
         if type(normalizer) == str:
             normalizer = eval(normalizer)
 
@@ -170,7 +179,9 @@ class LimitsNormalizer(Normalizer):
 
         ## [ -1, 1 ] --> [ 0, 1 ]
         x = (x + 1) / 2.
-
+        # print(self.maxs.shape)
+        # print(self.mins.shape)
+        # print(x.shape)
         return x * (self.maxs - self.mins) + self.mins
 
 class SafeLimitsNormalizer(LimitsNormalizer):

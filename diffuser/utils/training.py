@@ -111,6 +111,7 @@ class Trainer(object):
 
                 loss, infos = self.model.loss(*batch)
                 loss = loss / self.gradient_accumulate_every
+                # print('current loss is',loss)
                 loss.backward()
 
             self.optimizer.step()
@@ -181,9 +182,9 @@ class Trainer(object):
         ## get trajectories and condition at t=0 from batch
         trajectories = to_np(batch.trajectories)
         conditions = to_np(batch.conditions[0])[:,None]
-
+        obs_dim = self.dataset.observation_dim
         ## [ batch_size x horizon x observation_dim ]
-        normed_observations = trajectories[:, :, self.dataset.action_dim:]
+        normed_observations = trajectories[:, :, -obs_dim:]
         observations = self.dataset.normalizer.unnormalize(normed_observations, 'observations')
 
         # from diffusion.datasets.preprocessing import blocks_cumsum_quat
@@ -220,7 +221,8 @@ class Trainer(object):
             samples = to_np(samples)
 
             ## [ n_samples x horizon x observation_dim ]
-            normed_observations = samples[:, :, self.dataset.action_dim:]
+            obs_dim = self.dataset.observation_dim
+            normed_observations = samples[:, :, -obs_dim:]
 
             # [ 1 x 1 x observation_dim ]
             normed_conditions = to_np(batch.conditions[0])[:,None]
