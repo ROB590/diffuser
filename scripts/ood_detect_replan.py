@@ -31,7 +31,11 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
     trainer     = cfgs['trainer'](diffusion, dataset_obj, renderer)
 
     if epoch == 'latest':
-        epoch = get_latest_epoch((logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}'))
+        #epoch = get_latest_epoch((logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')) #
+        #FIXME hard code checkpoints
+        epoch = 200000
+        print("Current horizon",horizon)
+        print('current step',n_steps)
     trainer.load(epoch)
 
     return DiffusionExperiment(
@@ -40,8 +44,8 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
 
 ########################### Replanning determinator
 # 1) Hyperparameters for adaptive replanning
-ls       = -10.0         # full‐replan threshold (tune on validation)
-lf       = -5.0          # partial‐replan threshold (ls < lf)
+ls       = 98       # full‐replan threshold (tune on validation)
+lf       = 0          # partial‐replan threshold (ls < lf)
 I        = [10, 50, 100] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step
 
 # 2) Decision function
@@ -73,6 +77,7 @@ def should_replan(diffusion, old_seq, cond, t, ls, lf, I):
     L_t = sum(kl_vals) / len(kl_vals)
 
     # 2.3 Apply thresholds
+    print(f"Average loglikelihood at {t}, is {L_t}")
     if L_t <= ls:
         return 'scratch'
     elif L_t <= lf:
@@ -115,15 +120,16 @@ print(f"Evaluating with horizon={horizon}, n_steps={n_steps}")
 #######################
 # Main control loop
 #######################
-observation  = env.reset()
+observation  = env.reset(seed = 42)
 state        = env.state_vector().copy()
 if args.conditional:
     env.set_target()
 target       = env._target
 
 K            = 50     # replan every K steps
-Kp           = 1.0     # P–controller gain
-
+Kp           = 7     # P–controller gain
+Kd = 0.8            # tune this
+prev_error = np.zeros(2)  
 rollout      = [observation.copy()]
 total_reward = 0.0
 sequence     = None
@@ -141,6 +147,7 @@ for t in range(400): #env.max_episode_steps
             0:                   state.copy(),
             diffusion.horizon-1: np.array([*target, 0, 0])
         }
+        breakpoint()
         _, samples = policy(cond, batch_size=args.batch_size)
         sequence   = samples.observations[0]   # (horizon, state_dim)
         plan_ptr   = 0
@@ -170,7 +177,10 @@ for t in range(400): #env.max_episode_steps
             samples.observations,
             ncol=1
         )
-    mode = should_replan(diffusion, sequence, cond, t, ls, lf, I)
+    if t > 0 and t < diffusion.horizon and (t % K) == 0:
+        mode = should_replan(diffusion, sequence, cond, t, ls, lf, I)
+    else:
+        mode = None
     if mode == 'scratch':
         print(f"[t={t}] Replanning from start {state[:2]} to target {target} by scratch")
         # full replanning (Algorithm 2)
@@ -184,7 +194,11 @@ for t in range(400): #env.max_episode_steps
         cond_new = {0: sequence[t], diffusion.horizon-1: cond[diffusion.horizon-1]}
         _, samples_fut = policy(cond_new, batch_size=args.batch_size)
         # splice new future onto executed prefix
-        sequence = np.concatenate([sequence[:t], samples_fut.observations[0]], axis=0)
+        horizon = diffusion.horizon
+        new_tail = samples_fut.observations[0][t:]     
+        sequence = np.concatenate([
+            sequence[:t],    
+            new_tail], axis=0)         
         plan_ptr = 0
     # 2) Read current waypoint
     wp          = sequence[plan_ptr]        # [x,y,vx,vy]
@@ -192,7 +206,15 @@ for t in range(400): #env.max_episode_steps
     pos_current = state[:2]
 
     # 3) Simple P–control on position
-    action      = Kp * (pos_target - pos_current)
+    # action      = Kp * (pos_target - pos_current)
+    error       = pos_target - pos_current       # [2]
+    if t == 0:
+        # no previous error yet → zero derivative
+        deriv = np.zeros_like(error)
+    else:
+        deriv = (error - prev_error) / 1.0      
+    action = Kp * error + Kd * deriv           
+    prev_error = error.copy()
     next_obs, reward, terminal, _ = env.step(action)
     total_reward += reward
     rollout.append(next_obs.copy())

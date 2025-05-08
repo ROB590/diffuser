@@ -24,6 +24,7 @@ def get_latest_epoch(loadpath):
     for state in states:
         epoch = int(state.replace('state_', '').replace('.pt', ''))
         latest_epoch = max(epoch, latest_epoch)
+    print("Loading checkpoint",latest_epoch)
     return latest_epoch
 
 def load_config(*loadpath):

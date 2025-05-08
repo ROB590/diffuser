@@ -3,7 +3,7 @@ from collections import namedtuple
 import torch
 import einops
 import pdb
-
+import numpy as np
 import diffuser.utils as utils
 # from diffusion.datasets.preprocessing import get_policy_preprocess_fn
 
@@ -49,13 +49,21 @@ class Policy:
         sample = self.diffusion_model(conditions)
         sample = utils.to_np(sample)
 
-        ## extract action [ batch_size x horizon x transition_dim ]
-        actions = sample[:, :, :self.action_dim]
-        actions = self.normalizer.unnormalize(actions, 'actions')
-        # actions = np.tanh(actions)
+        # ## extract action [ batch_size x horizon x transition_dim ]
+        # actions = sample[:, :, :self.action_dim]
+        # actions = self.normalizer.unnormalize(actions, 'actions')
+        # # actions = np.tanh(actions)
 
-        ## extract first action
-        action = actions[0, 0]
+        # ## extract first action
+        # action = actions[0, 0]
+        if self.action_dim > 0:
+            normed_actions = sample[:, :, :self.action_dim]
+            actions = self.normalizer.unnormalize(normed_actions, 'actions')
+            action = actions[0, 0]
+        else:
+            # no actions: set empty array and a default zero action
+            actions = np.zeros((batch_size, sample.shape[1], 0), dtype=np.float32)
+            action = np.zeros((0,), dtype=np.float32)
 
         # if debug:
         normed_observations = sample[:, :, self.action_dim:]
