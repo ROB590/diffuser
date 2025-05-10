@@ -15,7 +15,7 @@ import torch
 import math, random
 np.set_printoptions(threshold=np.inf, linewidth=np.inf) # For debug
 # Hyperparameter
-
+seed = 3
 ########################### Replanning determinator
 # 1) Hyperparameters for adaptive replanning
 ls       = 0.7       # full‐replan threshold (tune on validation)
@@ -366,7 +366,7 @@ diffusion = diff_exp.ema
 dataset   = diff_exp.dataset
 renderer  = diff_exp.renderer
 policy    = Policy(diffusion, dataset.normalizer)
-seed = 2
+
 print(f"Evaluating with horizon={horizon}, n_steps={n_steps}")
 
 #######################
