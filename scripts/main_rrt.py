@@ -18,9 +18,9 @@ np.set_printoptions(threshold=np.inf, linewidth=np.inf) # For debug
 
 ########################### Replanning determinator
 # 1) Hyperparameters for adaptive replanning
-ls       = 1.2       # full‐replan threshold (tune on validation)
-lf       = 0.7          # partial‐replan threshold (ls < lf)
-I        = [50,100,200] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step #should be more than 1
+ls       = 0.7       # full‐replan threshold (tune on validation)
+lf       = 1.1          # partial‐replan threshold (ls < lf)
+I        = [50,100,125,175,200] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step #should be more than 1
 # 2) Control paraemters
 K            = 100     # replan every K steps
 Kp           = 0.58     # P–controller gain 0.6
@@ -66,12 +66,13 @@ def compute_L_t(diffusion, tau0, cond, I):
     L_t = sum(kl_vals) / len(kl_vals)
     return L_t
 # RRT plan with diffusion
+############################ RRT ################################################
 #NOTE default would be rrt connect if can not find the efficient path
 def rrt(diffusion,policy,grid, start, goal):
     # calls the rrt_connect above
     print("real rrt start point is",start)
     path = rrt_connect(diffusion,policy,grid, start, goal,
-                       max_iter=1000,
+                       max_iter=10000,
                        extend_len=0.5)
     if path is None:
         return None
@@ -80,7 +81,7 @@ def rrt(diffusion,policy,grid, start, goal):
 
 def rrt_connect(diffusion, policy, grid, start, goal,
                 max_iter=500, extend_len=1.0, horizon=384,
-                I=[50,100,200], kl_thresh=0.8):
+                I=[50,100,200], kl_thresh=ls):
     class Node:
         __slots__ = ('x','y','parent')
         def __init__(self, x, y, parent=None):
@@ -126,7 +127,20 @@ def rrt_connect(diffusion, policy, grid, start, goal,
             path.append((node.x, node.y))
             node = node.parent
         return path[::-1]
-
+    def collision_free_segment(grid, p1, p2):
+        """
+        Returns True iff the straight line from p1→p2 does *not*
+        pass through any WALL cell in env.unwrapped.maze_arr.
+        """
+        x0, y0 = to_cell(p1)
+        x1, y1 = to_cell(p2)
+        for i,j in bresenham_line(x0, y0, x1, y1):
+            # out‐of‐bounds is “collision”
+            if not (0 <= i < grid.shape[0] and 0 <= j < grid.shape[1]):
+                return False
+            if grid[i,j] == WALL:
+                return False
+        return True
     tree_s = [Node(*start)]
     tree_g = [Node(*goal)]
 
@@ -140,12 +154,20 @@ def rrt_connect(diffusion, policy, grid, start, goal,
         new_s  = steering(near_s, rnd)
         if detect_collisions_grid(env, [(new_s.x, new_s.y)])[0]:
             continue
+        if not collision_free_segment(grid,
+                               (near_s.x, near_s.y),
+                               (new_s.x, new_s.y)):
+            continue
         tree_s.append(new_s)
 
         # 3) Try connect goal‐tree toward new_s
         near_g = nearest(tree_g, (new_s.x, new_s.y))
         new_g  = steering(near_g, (new_s.x, new_s.y))
         if detect_collisions_grid(env, [(new_g.x, new_g.y)])[0]:
+            continue
+        if not collision_free_segment(grid,
+                               (near_g.x, near_g.y),
+                               (new_g.x, new_g.y)):
             continue
         tree_g.append(new_g)
         # ** diffusion‐KL check in lieu of collision‐only **
@@ -165,6 +187,10 @@ def rrt_connect(diffusion, policy, grid, start, goal,
             )
         # otherwise, fall back: if direct connect (no collision), accept it
         if not detect_collisions_grid(env, [(new_g.x, new_g.y)])[0]:
+            if not collision_free_segment(grid,
+                               (new_s.x, new_s.y),
+                               (new_g.x, new_g.y)):
+                continue
             tree_g.append(new_g)
             if math.hypot(new_s.x - new_g.x, new_s.y - new_g.y) < 1e-6:
                 # pure-RRT-Connect success
@@ -178,6 +204,7 @@ def rrt_connect(diffusion, policy, grid, start, goal,
         
     # no path found
     return None
+### RRT helper
 WALL = 10
 
 def to_cell(pt):
@@ -205,7 +232,36 @@ def detect_collisions_grid(env, positions):
             flags.append(False)
     return flags
 
-
+def bresenham_line(x0, y0, x1, y1):
+    """
+    Yield all integer grid cells on the line from (x0,y0) to (x1,y1)
+    using Bresenham’s algorithm.
+    """
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    x, y = x0, y0
+    sx = 1 if x1 > x0 else -1
+    sy = 1 if y1 > y0 else -1
+    if dy <= dx:
+        err = dx // 2
+        while x != x1:
+            yield x, y
+            err -= dy
+            if err < 0:
+                y += sy
+                err += dx
+            x += sx
+        yield x, y
+    else:
+        err = dy // 2
+        while y != y1:
+            yield x, y
+            err -= dx
+            if err < 0:
+                x += sx
+                err += dy
+            y += sy
+        yield x, y
 #######################
 # Helper to load your diffusion experiment
 #######################
@@ -428,6 +484,7 @@ for t in range(800): #env.max_episode_steps
         tau0 = samples.observations[0]
         L_astar = compute_L_t(diffusion, tau0, cond, I)
         print(f"[t={t}] RRT*‐plan OOD‐score L_t = {L_astar:.3f}")
+        #current_planner = 'diffusion' #FIXME switch back for checking 
         if L_astar > ls:
             # switch back to diffusion
             print("  → switching back to diffusion planner")
