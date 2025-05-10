@@ -12,9 +12,38 @@ import diffuser.utils as utils
 from diffuser.models import TemporalUnet, GaussianDiffusion
 from diffuser.utils.serialization import DiffusionExperiment, get_latest_epoch
 import torch
+import math, random
 np.set_printoptions(threshold=np.inf, linewidth=np.inf) # For debug
-# convert between astar 
-# helper for evaluating a star # NOTE need to remove after validate
+# Hyperparameter
+
+########################### Replanning determinator
+# 1) Hyperparameters for adaptive replanning
+ls       = 1.2       # full‐replan threshold (tune on validation)
+lf       = 0.7          # partial‐replan threshold (ls < lf)
+I        = [50,100,200] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step #should be more than 1
+# 2) Control paraemters
+K            = 100     # replan every K steps
+Kp           = 0.58     # P–controller gain 0.6
+Kd = 0.7            # tune this  0.6
+Ki = 0.001
+dt = 0.05
+
+
+def fit_to_horizon(path_xy, horizon):
+    """
+    path_xy: np.array of shape (L,2), arbitrary L
+    returns: np.array of shape (horizon,2)
+    """
+    L = path_xy.shape[0]
+    if L == horizon:
+        return path_xy.copy()
+    # parametrize original path by u in [0,1]
+    u_orig = np.linspace(0.0, 1.0, L)
+    u_new  = np.linspace(0.0, 1.0, horizon)
+    # interpolate x and y separately
+    x_new = np.interp(u_new, u_orig, path_xy[:,0])
+    y_new = np.interp(u_new, u_orig, path_xy[:,1])
+    return np.stack([x_new, y_new], axis=1)
 def compute_L_t(diffusion, tau0, cond, I):
     """Average KL over timesteps in I for detection."""
     device = next(diffusion.parameters()).device
@@ -36,22 +65,119 @@ def compute_L_t(diffusion, tau0, cond, I):
         kl_vals.append(kl.item())
     L_t = sum(kl_vals) / len(kl_vals)
     return L_t
-def fit_to_horizon(path_xy, horizon):
-    """
-    path_xy: np.array of shape (L,2), arbitrary L
-    returns: np.array of shape (horizon,2)
-    """
-    L = path_xy.shape[0]
-    if L == horizon:
-        return path_xy.copy()
-    # parametrize original path by u in [0,1]
-    u_orig = np.linspace(0.0, 1.0, L)
-    u_new  = np.linspace(0.0, 1.0, horizon)
-    # interpolate x and y separately
-    x_new = np.interp(u_new, u_orig, path_xy[:,0])
-    y_new = np.interp(u_new, u_orig, path_xy[:,1])
-    return np.stack([x_new, y_new], axis=1)
-# Astar helper ----------
+# RRT plan with diffusion
+#NOTE default would be rrt connect if can not find the efficient path
+def rrt(diffusion,policy,grid, start, goal):
+    # calls the rrt_connect above
+    print("real rrt start point is",start)
+    path = rrt_connect(diffusion,policy,grid, start, goal,
+                       max_iter=1000,
+                       extend_len=0.5)
+    if path is None:
+        return None
+    # convert cell-based points → continuous already done
+    return np.array(path, dtype=np.float32)
+
+def rrt_connect(diffusion, policy, grid, start, goal,
+                max_iter=500, extend_len=1.0, horizon=384,
+                I=[50,100,200], kl_thresh=0.8):
+    class Node:
+        __slots__ = ('x','y','parent')
+        def __init__(self, x, y, parent=None):
+            self.x, self.y, self.parent = x, y, parent
+
+    def steering(from_node, to_point):
+        dx, dy = to_point[0] - from_node.x, to_point[1] - from_node.y
+        d = math.hypot(dx, dy)
+        if d <= extend_len:
+            return Node(to_point[0], to_point[1], from_node)
+        theta = math.atan2(dy, dx)
+        return Node(
+            from_node.x + extend_len * math.cos(theta),
+            from_node.y + extend_len * math.sin(theta),
+            from_node
+        )
+
+    def kl_safe(a, b):
+        """Try a diffusion rollout between a→b, return (is_safe, micro_plan)."""
+        cond = {
+            0:                   np.array([a.x,   a.y,   0, 0], dtype=np.float32),
+            diffusion.horizon-1: np.array([b.x,   b.y,   0, 0], dtype=np.float32)
+        }
+        _, samples = policy(cond, batch_size=1)
+        micro = samples.observations[0]  # [horizon, obs_dim]
+        L = compute_L_t(diffusion, micro, cond, I)
+        print(f'Check the sequence generate from {a.x,a.y} to {b.x,b.y},loglikelihood is {L}')
+        micro_plan = np.expand_dims(micro, axis=0)
+        renderer.composite(
+                join(args.savepath, f'checking_kl.png'),
+                micro_plan,
+                ncol=1
+            )
+        #breakpoint()
+        return (L > kl_thresh), micro[:, :2]  # return positions only
+
+    def nearest(tree, pt):
+        return min(tree, key=lambda n: (n.x - pt[0])**2 + (n.y - pt[1])**2)
+
+    def build_path(node):
+        path = []
+        while node is not None:
+            path.append((node.x, node.y))
+            node = node.parent
+        return path[::-1]
+
+    tree_s = [Node(*start)]
+    tree_g = [Node(*goal)]
+
+    for iter_idx in range(max_iter):
+        # 1) Sample random point
+        rnd = (random.uniform(0, grid.shape[1]),
+               random.uniform(0, grid.shape[0]))
+
+        # 2) Extend start‐tree
+        near_s = nearest(tree_s, rnd)
+        new_s  = steering(near_s, rnd)
+        if detect_collisions_grid(env, [(new_s.x, new_s.y)])[0]:
+            continue
+        tree_s.append(new_s)
+
+        # 3) Try connect goal‐tree toward new_s
+        near_g = nearest(tree_g, (new_s.x, new_s.y))
+        new_g  = steering(near_g, (new_s.x, new_s.y))
+        if detect_collisions_grid(env, [(new_g.x, new_g.y)])[0]:
+            continue
+        tree_g.append(new_g)
+        # ** diffusion‐KL check in lieu of collision‐only **
+        safe, micro_path = kl_safe(new_s, new_g)
+        if safe:
+            # stitch: start‐tree path + micro‐plan + goal‐tree path
+            path_from_start = build_path(new_s)
+            path_from_goal  = build_path(new_g)
+            #print("Path from start,",path_from_start)
+            #print("Path from goal,",path_from_goal)
+            #print("intermediate path",micro_path)
+            # remove duplicate midpoint, then concatenate
+            return (
+                path_from_start
+                + [(x, y) for (x, y) in micro_path]
+                + path_from_goal[::-1][1:]
+            )
+        # otherwise, fall back: if direct connect (no collision), accept it
+        if not detect_collisions_grid(env, [(new_g.x, new_g.y)])[0]:
+            tree_g.append(new_g)
+            if math.hypot(new_s.x - new_g.x, new_s.y - new_g.y) < 1e-6:
+                # pure-RRT-Connect success
+                #print("Default rrt success")
+                #print("part 1 path:",build_path(new_s))
+                #print("part 2 path",build_path(new_g)[::-1][1:])
+                return build_path(new_s) + build_path(new_g)[::-1][1:]
+
+        # 4) Swap trees
+        tree_s, tree_g = tree_g, tree_s
+        
+    # no path found
+    return None
 WALL = 10
 
 def to_cell(pt):
@@ -79,39 +205,6 @@ def detect_collisions_grid(env, positions):
             flags.append(False)
     return flags
 
-# ----------------------------
-# A* on occupancy grid
-# ----------------------------
-def astar(grid: np.ndarray, start: tuple, goal: tuple):
-    """4-connected grid A* from start to goal"""
-    H, W = grid.shape
-    assert grid[start] != WALL and grid[goal] != WALL
-    neigh = [(1,0),(-1,0),(0,1),(0,-1)]
-    def h(a,b): return abs(a[0]-b[0]) + abs(a[1]-b[1])
-    open_set = [(h(start,goal), 0, start)]
-    came = {}
-    gscore = {start:0}
-    closed = set()
-    while open_set:
-        _, g, cur = heappop(open_set)
-        if cur == goal:
-            path = [cur]
-            while path[-1] in came:
-                path.append(came[path[-1]])
-            return path[::-1]
-        closed.add(cur)
-        for dx, dy in neigh:
-            nb = (cur[0]+dx, cur[1]+dy)
-            if not (0<=nb[0]<H and 0<=nb[1]<W):
-                continue
-            if grid[nb] == WALL or nb in closed:
-                continue
-            tg = g + 1
-            if tg < gscore.get(nb, float('inf')):
-                came[nb] = cur
-                gscore[nb] = tg
-                heappush(open_set, (tg + h(nb, goal), tg, nb))
-    return None
 
 #######################
 # Helper to load your diffusion experiment
@@ -134,21 +227,15 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
         #epoch = get_latest_epoch((logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')) #
         #FIXME hard code checkpoints
         epoch = 200000
-        print("Current horizon",horizon)
-        print('current step',n_steps)
+        #print("Current horizon",horizon)
+        #print('current step',n_steps)
     trainer.load(epoch)
 
     return DiffusionExperiment(
         dataset_obj, renderer, model, diffusion, trainer.ema_model, trainer, epoch
     )
 
-########################### Replanning determinator
-# 1) Hyperparameters for adaptive replanning
-ls       = 1       # full‐replan threshold (tune on validation)
-lf       = 0.7          # partial‐replan threshold (ls < lf)
-I        = [50,100,200] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step #should be more than 1
-
-# 2) Decision function
+# 2) Decision function  #FIXME rrt planner activate also should measure for ood?
 def should_replan(diffusion, old_seq,rollout,current_planner, cond, t, ls, lf, I):
     if current_planner == 'diffusion':
         device = next(diffusion.parameters()).device
@@ -191,8 +278,8 @@ def should_replan(diffusion, old_seq,rollout,current_planner, cond, t, ls, lf, I
             return 'future'
         else:
             return 'none'
-    else: #it is astar right now
-        return "a_star_eval"
+    else:
+        return "rrt_eval"
 #######################
 # Argument parsing
 #######################
@@ -223,25 +310,20 @@ diffusion = diff_exp.ema
 dataset   = diff_exp.dataset
 renderer  = diff_exp.renderer
 policy    = Policy(diffusion, dataset.normalizer)
-
+seed = 2
 print(f"Evaluating with horizon={horizon}, n_steps={n_steps}")
 
 #######################
 # Main control loop
 #######################
-observation  = env.reset()
+observation  = env.reset(seed=seed)
 state        = env.state_vector().copy()
 if args.conditional:
     env.set_target()
 target       = env._target
 
-K            = 50     # replan every K steps
-Kp           = 0.58     # P–controller gain 0.6
-Kd = 0.7            # tune this  0.6
-Ki = 0.001
 prev_error = np.zeros(2) 
 integral = np.zeros(2) 
-dt = 0.05
 rollout      = [observation.copy()]
 total_reward = 0.0
 sequence     = None
@@ -292,69 +374,38 @@ for t in range(800): #env.max_episode_steps
         )
         #print('current seq',sequence)
     if t > 0 and t < diffusion.horizon and (t % K) == 0:
+        # FIXME distance between rollout and sequence left over are too large  only replan based on current sequence if replan?
         mode = should_replan(diffusion, sequence,rollout,current_planner, cond, t, ls, lf, I)
     else:
         mode = None
-    # if mode == 'scratch':
-    #     print(f"[t={t}] Replanning from start {state[:2]} to target {target} by scratch")
-    #     # full replanning (Algorithm 2)
-    #     _, samples = policy(cond, batch_size=args.batch_size)
-    #     sequence = samples.observations[0]
-    #     plan_ptr = 0
     if mode == 'scratch':
-        current_planner = 'astar'
-        print(f"[t={t}] Replanning from start {state[:2]} to target {target} by A*")
+        current_planner = 'rrt'
+        print(f"[t={t}] Replanning from start {state[:2]} to target {target} by RRT Connect")
         # 1) read start/goal in continuous space
-        start = env.state_vector()[:2]                       # e.g. [x,y,…]
-        goal  = cond[diffusion.horizon - 1][:2]
-
-        # 2) grid-based A*
         grid = env.unwrapped.maze_arr
-        start_cell = to_cell(start)
-        goal_cell  = to_cell(goal)
-        cell_path = astar(grid, start_cell, goal_cell)
+        start = env.state_vector()[:2]
+        goal  = cond[diffusion.horizon-1][:2]
 
-        if cell_path is not None:
-            # 3) convert cells → world (x,y)
-            raw_xy = np.array([cell_to_world(c) for c in cell_path], dtype=np.float32)
-            # 4) interpolate/compress to exactly `horizon` points
-            plan_xy = fit_to_horizon(raw_xy, diffusion.horizon)
+        raw_xy = rrt(diffusion,policy,grid, start, goal)
+        if raw_xy is None:
+            raise RuntimeError("RRT failed to find a path")
+        # 4) interpolate/pad/truncate to horizon
+        plan_xy = fit_to_horizon(raw_xy, diffusion.horizon)
 
-            # 5) build full state‐trajectory [H × obs_dim]
-            obs_dim = dataset.observation_dim
-            seq4 = np.zeros((diffusion.horizon, obs_dim), dtype=np.float32)
-            seq4[:, :2] = plan_xy
-            # leave other dimensions (e.g. velocity) at zero
-            sequence = seq4
-        else:
-            # fallback to diffusion if A* fails
-            print("[WARNING] A* found no path → using diffusion fallback")
-            state = env.state_vector().copy()
-            cond[0] = state
-            _, samples = policy(cond, batch_size=args.batch_size)
-            sequence = samples.observations[0]
-        # visualize
-        aplan = np.expand_dims(sequence, axis=0)   # sequence is your H×obs_dim A* plan
+        obs_dim = dataset.observation_dim
+        seq4 = np.zeros((diffusion.horizon, obs_dim), dtype=np.float32)
+        seq4[:, :2] = plan_xy
+        sequence = seq4
+        plan_ptr = 0
+
+        # visualize the RRT plan:
+        rrtplan = np.expand_dims(sequence, axis=0)
         renderer.composite(
-            join(args.savepath, f'plan_astar_t{t}.png'),
-            aplan,
+            join(args.savepath, f'plan_rrt_t{t}.png'),
+            rrtplan,
             ncol=1
         )
-        plan_ptr = 0
     elif mode == 'future':
-        # print(f"[t={t}] Replanning from start {state[:2]} to target {target} by future")
-        # # partial replanning (Algorithm 3):
-        # # Keep states up to t, regenerate future tail
-        # cond_new = {0: sequence[t], diffusion.horizon-1: cond[diffusion.horizon-1]}
-        # _, samples_fut = policy(cond_new, batch_size=args.batch_size)
-        # # splice new future onto executed prefix
-        # horizon = diffusion.horizon
-        # new_tail = samples_fut.observations[0][t:]     
-        # sequence = np.concatenate([
-        #     sequence[:t],    
-        #     new_tail], axis=0)         
-        # plan_ptr = 0
-
         print(f"[t={t}] Replanning from start {state[:2]} to target {target} by future")
         # full replanning (Algorithm 2)
         state = env.state_vector().copy()
@@ -368,7 +419,7 @@ for t in range(800): #env.max_episode_steps
             ncol=1
         )
         plan_ptr = 0
-    elif mode == 'a_star_eval':
+    elif mode == 'rrt_eval':
         print(f"[t={t}] Evaluating from start {state[:2]} to target {target} by for future diffuser trajectory")
         state = env.state_vector().copy()
         cond[0] = state
@@ -376,7 +427,7 @@ for t in range(800): #env.max_episode_steps
         _, samples = policy(cond, batch_size=args.batch_size)
         tau0 = samples.observations[0]
         L_astar = compute_L_t(diffusion, tau0, cond, I)
-        print(f"[t={t}] A*‐plan OOD‐score L_t = {L_astar:.3f}")
+        print(f"[t={t}] RRT*‐plan OOD‐score L_t = {L_astar:.3f}")
         if L_astar > ls:
             # switch back to diffusion
             print("  → switching back to diffusion planner")
@@ -396,6 +447,11 @@ for t in range(800): #env.max_episode_steps
         renderer.composite(
                 join(args.savepath, f'cur_wpt{t}.png'),
                 current_waypoint,
+                ncol=1
+            )
+        renderer.composite(
+                join(args.savepath, f'cur_rollout{t}.png'),
+                 np.array([rollout]),
                 ncol=1
             )
     # 2) Read current waypoint
