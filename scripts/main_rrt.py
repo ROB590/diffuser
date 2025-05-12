@@ -15,7 +15,7 @@ import torch
 import math, random
 np.set_printoptions(threshold=np.inf, linewidth=np.inf) # For debug
 # Hyperparameter
-seed = 3
+seed = 7
 ########################### Replanning determinator
 # 1) Hyperparameters for adaptive replanning
 ls       = 0.7       # full‐replan threshold (tune on validation)
@@ -282,7 +282,7 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
     if epoch == 'latest':
         #epoch = get_latest_epoch((logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')) #
         #FIXME hard code checkpoints
-        epoch = 200000
+        epoch = 360000 #200000
         #print("Current horizon",horizon)
         #print('current step',n_steps)
     trainer.load(epoch)
