@@ -20,7 +20,32 @@ conda env create -f environment.yml
 conda activate diffusion
 pip install -e .
 ```
-
+### mujoco
+install the mujoco from and use pip install
+```
+https://github.com/google-deepmind/mujoco/releases/tag/2.1.0 # Download to Ubuntu download directory
+mkdir -p ~/.mujoco
+cp ~/Downloads/mujoco210-linux-x86_64.tar.gz ~/.mujoco/
+cd ~/.mujoco
+tar -xvf mujoco210-linux-x86_64.tar.gz
+pip install mujoco-py
+```
+do not for got to setup the env
+```
+export MUJOCO_PY_MUJOCO_PATH=~/.mujoco/mujoco210
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$MUJOCO_PY_MUJOCO_PATH/bin
+source ~/.bashrc
+```
+Trouble shooting if Cython error please check the version
+```
+pip uninstall Cython
+pip install Cython==0.29.36
+```
+then rebuild mujoco-py
+```
+pip uninstall mujoco-py
+pip install mujoco-py==2.1.2.14 --no-cache-dir
+```
 ## Usage
 
 Train a diffusion model with:
@@ -35,7 +60,10 @@ Plan using the diffusion model with:
 ```
 python scripts/plan_maze2d.py --config config.maze2d --dataset maze2d-large-v1
 ```
-
+## Config
+```
+for change the default training parameters and config, see config/maze2d.py
+```
 
 ## Docker
 
