@@ -65,8 +65,8 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
 
 ########################### Replanning determinator
 # 1) Hyperparameters for adaptive replanning
-ls       = 0.8       # full‐replan threshold (tune on validation)
-lf       = 1          # partial‐replan threshold (ls < lf)
+ls       = 0.4       # full‐replan threshold (tune on validation)
+lf       = 0.5          # partial‐replan threshold (ls < lf)
 I        = [50,100,125,175,200] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step
 
 # 2) Decision function
