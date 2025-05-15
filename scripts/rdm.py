@@ -33,7 +33,7 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
     if epoch == 'latest':
         #epoch = get_latest_epoch((logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')) #
         #FIXME hard code checkpoints
-        epoch = 200000
+        epoch = 0 #200000
         print("Current horizon",horizon)
         print('current step',n_steps)
     trainer.load(epoch)
@@ -44,9 +44,9 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
 
 ########################### Replanning determinator
 # 1) Hyperparameters for adaptive replanning
-ls       = 98       # full‐replan threshold (tune on validation)
-lf       = 0          # partial‐replan threshold (ls < lf)
-I        = [10, 50, 100] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step
+ls       = 0.8       # full‐replan threshold (tune on validation)
+lf       = 1          # partial‐replan threshold (ls < lf)
+I        = [50,100,125,175,200] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step
 
 # 2) Decision function
 def should_replan(diffusion, old_seq, cond, t, ls, lf, I):
@@ -114,7 +114,8 @@ diffusion = diff_exp.ema
 dataset   = diff_exp.dataset
 renderer  = diff_exp.renderer
 policy    = Policy(diffusion, dataset.normalizer)
-
+Ns = args.horizon # NOTE should match to horizon
+Nf = 100 #NOTE self define steps for future replan
 print(f"Evaluating with horizon={horizon}, n_steps={n_steps}")
 
 #######################
@@ -147,8 +148,8 @@ for t in range(400): #env.max_episode_steps
             0:                   state.copy(),
             diffusion.horizon-1: np.array([*target, 0, 0])
         }
-        breakpoint()
-        _, samples = policy(cond, batch_size=args.batch_size)
+        #breakpoint()
+        _, samples = policy(cond, batch_size=args.batch_size,diffusion_steps = Ns,replan_mode = 'scratch')
         sequence   = samples.observations[0]   # (horizon, state_dim)
         plan_ptr   = 0
 
@@ -184,7 +185,7 @@ for t in range(400): #env.max_episode_steps
     if mode == 'scratch':
         print(f"[t={t}] Replanning from start {state[:2]} to target {target} by scratch")
         # full replanning (Algorithm 2)
-        _, samples = policy(cond, batch_size=args.batch_size)
+        _, samples = policy(cond, batch_size=args.batch_size,diffusion_steps = Ns,replan_mode = 'scratch')
         sequence = samples.observations[0]
         plan_ptr = 0
     elif mode == 'future':
@@ -192,7 +193,7 @@ for t in range(400): #env.max_episode_steps
         # partial replanning (Algorithm 3):
         # Keep states up to t, regenerate future tail
         cond_new = {0: sequence[t], diffusion.horizon-1: cond[diffusion.horizon-1]}
-        _, samples_fut = policy(cond_new, batch_size=args.batch_size)
+        _, samples_fut = policy(cond, batch_size=args.batch_size,diffusion_steps = Nf,replan_mode = 'future')
         # splice new future onto executed prefix
         horizon = diffusion.horizon
         new_tail = samples_fut.observations[0][t:]     
@@ -242,3 +243,4 @@ with open(join(args.savepath, 'rollout.json'), 'w') as f:
     }, f, indent=2)
 
 print(f"Done. Steps={len(rollout)-1}, Return={total_reward:.2f}")
+

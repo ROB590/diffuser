@@ -134,44 +134,114 @@ class GaussianDiffusion(nn.Module):
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
         return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
+    # @torch.no_grad()
+    # def p_sample_loop(self, shape, cond, verbose=True, return_diffusion=False):
+    #     device = self.betas.device
+
+    #     batch_size = shape[0]
+    #     x = torch.randn(shape, device=device)
+    #     x = apply_conditioning(x, cond, self.action_dim)
+
+    #     if return_diffusion: diffusion = [x]
+
+    #     progress = utils.Progress(self.n_timesteps) if verbose else utils.Silent()
+    #     for i in reversed(range(0, self.n_timesteps)):
+    #         timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
+    #         x = self.p_sample(x, cond, timesteps)
+    #         x = apply_conditioning(x, cond, self.action_dim)
+
+    #         progress.update({'t': i})
+
+    #         if return_diffusion: diffusion.append(x)
+
+    #     progress.close()
+
+    #     if return_diffusion:
+    #         return x, torch.stack(diffusion, dim=1)
+    #     else:
+    #         return x
     @torch.no_grad()
-    def p_sample_loop(self, shape, cond, verbose=True, return_diffusion=False):
+    def p_sample_loop(
+        self,
+        shape,
+        cond,
+        verbose=True,
+        return_diffusion=False,
+        samples=None,
+        diffusion_step=None
+    ):
         device = self.betas.device
 
-        batch_size = shape[0]
-        x = torch.randn(shape, device=device)
+        # 1) determine number of steps
+        if diffusion_step is None:
+            diffusion_step = self.n_timesteps
+
+        # 2) initialize latent x
+        if samples is None:
+            # full replan: start from noise
+            x = torch.randn(shape, device=device)
+        else:
+            # partial replan: noise up existing trajectory at mid-chain
+            noise = torch.randn_like(samples)
+            t = torch.full((samples.size(0),), diffusion_step // 3,
+                            device=device, dtype=torch.long)
+            x = self.q_sample(samples, t, noise)
+
+        # 3) apply conditioning prefix
         x = apply_conditioning(x, cond, self.action_dim)
 
-        if return_diffusion: diffusion = [x]
+        # 4) optional store diffusion path
+        if return_diffusion:
+            diffusion = [x]
 
-        progress = utils.Progress(self.n_timesteps) if verbose else utils.Silent()
-        for i in reversed(range(0, self.n_timesteps)):
-            timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
+        # 5) denoise for diffusion_step iterations
+        progress = utils.Progress(diffusion_step) if verbose else utils.Silent()
+        for i in reversed(range(diffusion_step)):
+            timesteps = torch.full((shape[0],), i,
+                                    device=device, dtype=torch.long)
             x = self.p_sample(x, cond, timesteps)
             x = apply_conditioning(x, cond, self.action_dim)
 
             progress.update({'t': i})
-
-            if return_diffusion: diffusion.append(x)
-
+            if return_diffusion:
+                diffusion.append(x)
         progress.close()
 
+        # 6) return final (and optionally full path)
         if return_diffusion:
             return x, torch.stack(diffusion, dim=1)
-        else:
-            return x
-
+        return x
     @torch.no_grad()
-    def conditional_sample(self, cond, *args, horizon=None, **kwargs):
-        '''
-            conditions : [ (time, state), ... ]
-        '''
+    # def conditional_sample(self, cond, *args, horizon=None,diffusion_step = None **kwargs):
+    #     '''
+    #         conditions : [ (time, state), ... ]
+    #     '''
+    #     device = self.betas.device
+    #     batch_size = len(cond[0])
+    #     horizon = horizon or self.horizon
+    #     shape = (batch_size, horizon, self.transition_dim)
+
+    #     return self.p_sample_loop(shape, cond, *args, **kwargs)
+    def conditional_sample(self, cond, *args, horizon=None, diffusion_step=None, samples=None, **kwargs):
+        """
+        cond: list of (time,state)
+        diffusion_step: number of denoising steps (None => full chain)
+        samples: existing trajectory for partial replan
+        """
         device = self.betas.device
         batch_size = len(cond[0])
         horizon = horizon or self.horizon
         shape = (batch_size, horizon, self.transition_dim)
 
-        return self.p_sample_loop(shape, cond, *args, **kwargs)
+        # pass new args through to p_sample_loop
+        return self.p_sample_loop(
+            shape,
+            cond,
+            *args,
+            samples=samples,
+            diffusion_step=diffusion_step,
+            **kwargs
+        )
 
     #------------------------------------------ training ------------------------------------------#
 
