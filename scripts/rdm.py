@@ -16,6 +16,27 @@ import torch
 #######################
 # Helper to load your diffusion experiment
 #######################
+ts = []       # list of timesteps
+L_vals = []   # corresponding log‐likelihood values
+def plot_loglikelihood(ts, L_vals, save_dir):
+    """
+    Plot and save the log‐likelihood (KL) curve.
+    Args:
+        ts (List[int]): timesteps at which we measured L_t
+        L_vals (List[float]): measured average KL values
+        save_dir (str): directory to save the plot into
+    """
+    plt.figure(figsize=(6,4))
+    plt.plot(ts, L_vals, '-o', linewidth=2, markersize=4)
+    plt.xlabel('Time step t')
+    plt.ylabel('Average KL (L_t)')
+    plt.title('Adaptive Replanning: Log‐Likelihood over Time')
+    plt.grid(True)
+    out_path = os.path.join(save_dir, 'loglikelihood_vs_t.png')
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+    print(f" → saved loglikelihood plot to {out_path}")
 def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest', device='cuda'):
     base = os.path.join(logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')
     cfg_names = ['dataset', 'render', 'model', 'diffusion', 'trainer']
@@ -79,11 +100,11 @@ def should_replan(diffusion, old_seq, cond, t, ls, lf, I):
     # 2.3 Apply thresholds
     print(f"Average loglikelihood at {t}, is {L_t}")
     if L_t <= ls:
-        return 'scratch'
+        return 'scratch',L_t
     elif L_t <= lf:
-        return 'future'
+        return 'future',L_t
     else:
-        return 'none'
+        return 'none',L_t
 #######################
 # Argument parsing
 #######################
@@ -135,7 +156,7 @@ rollout      = [observation.copy()]
 total_reward = 0.0
 sequence     = None
 plan_ptr     = 0
-
+L_t = 0 # temp holder
 for t in range(400): #env.max_episode_steps
     state = env.state_vector().copy()
 
@@ -179,7 +200,7 @@ for t in range(400): #env.max_episode_steps
             ncol=1
         )
     if t > 0 and t < diffusion.horizon and (t % K) == 0:
-        mode = should_replan(diffusion, sequence, cond, t, ls, lf, I)
+        mode,L_t = should_replan(diffusion, sequence, cond, t, ls, lf, I)
     else:
         mode = None
     if mode == 'scratch':
@@ -222,12 +243,13 @@ for t in range(400): #env.max_episode_steps
 
     # 4) Advance the pointer AFTER stepping
     plan_ptr = min(plan_ptr + 1, len(sequence)-1)
-
+    ts.append(t)
+    L_vals.append(L_t)
     # 5) Check for termination
     if terminal:
         print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
         break
-
+plot_loglikelihood(ts, L_vals, args.savepath)
 # 6) Final dump
 renderer.composite(
     join(args.savepath, 'final_rollout.png'),
