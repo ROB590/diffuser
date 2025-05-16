@@ -54,7 +54,7 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
     if epoch == 'latest':
         #epoch = get_latest_epoch((logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')) #
         #FIXME hard code checkpoints
-        epoch = 0 #200000
+        epoch = 80000 #200000
         print("Current horizon",horizon)
         print('current step',n_steps)
     trainer.load(epoch)
@@ -65,9 +65,9 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
 
 ########################### Replanning determinator
 # 1) Hyperparameters for adaptive replanning
-ls       = 0.4       # full‐replan threshold (tune on validation)
-lf       = 0.5          # partial‐replan threshold (ls < lf)
-I        = [50,100,125,175,200] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step
+ls       = 0.5       # full‐replan threshold (tune on validation)
+lf       = 0.7          # partial‐replan threshold (ls < lf)
+I        = [5,10,15] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step # 50,100,125,175,200
 
 # 2) Decision function
 def should_replan(diffusion, old_seq, cond, t, ls, lf, I):
@@ -121,7 +121,7 @@ args = Parser().parse_args('plan')
 env = datasets.load_environment(args.dataset)
 
 # Custom load of diffusion (to match your horizons)
-horizon = 384
+horizon = 256
 n_steps = 256
 diff_exp = load_diffusion_manual(
     args.logbase,
@@ -136,7 +136,7 @@ dataset   = diff_exp.dataset
 renderer  = diff_exp.renderer
 policy    = Policy(diffusion, dataset.normalizer)
 Ns = args.horizon # NOTE should match to horizon
-Nf = 100 #NOTE self define steps for future replan
+Nf = 80 #NOTE self define steps for future replan
 print(f"Evaluating with horizon={horizon}, n_steps={n_steps}")
 
 #######################
@@ -148,7 +148,7 @@ if args.conditional:
     env.set_target()
 target       = env._target
 
-K            = 50     # replan every K steps
+K            = 10     # replan every K steps
 Kp           = 7     # P–controller gain
 Kd = 0.8            # tune this
 prev_error = np.zeros(2)  
@@ -157,7 +157,7 @@ total_reward = 0.0
 sequence     = None
 plan_ptr     = 0
 L_t = 0 # temp holder
-for t in range(400): #env.max_episode_steps
+for t in range(800): #env.max_episode_steps
     state = env.state_vector().copy()
 
     # 1) init plan
@@ -208,6 +208,13 @@ for t in range(400): #env.max_episode_steps
         # full replanning (Algorithm 2)
         _, samples = policy(cond, batch_size=args.batch_size,diffusion_steps = Ns,replan_mode = 'scratch')
         sequence = samples.observations[0]
+        # visualize the scratch replan
+        rrtplan = np.expand_dims(sequence, axis=0)
+        renderer.composite(
+            join(args.savepath, f'plan_rrt_t{t}.png'),
+            rrtplan,
+            ncol=1
+        )
         plan_ptr = 0
     elif mode == 'future':
         print(f"[t={t}] Replanning from start {state[:2]} to target {target} by future")
@@ -220,14 +227,20 @@ for t in range(400): #env.max_episode_steps
         new_tail = samples_fut.observations[0][t:]     
         sequence = np.concatenate([
             sequence[:t],    
-            new_tail], axis=0)         
+            new_tail], axis=0) 
+        fplan = np.expand_dims(sequence, axis=0)   # sequence is the H×obs_dim future‐patched plan
+        renderer.composite(
+            join(args.savepath, f'plan_future_t{t}.png'),
+            fplan,
+            ncol=1
+        )        
         plan_ptr = 0
     # 2) Read current waypoint
     wp          = sequence[plan_ptr]        # [x,y,vx,vy]
     pos_target  = wp[:2]
     pos_current = state[:2]
 
-    # 3) Simple P–control on position
+    # 3) Simple Pd–control on position
     # action      = Kp * (pos_target - pos_current)
     error       = pos_target - pos_current       # [2]
     if t == 0:
