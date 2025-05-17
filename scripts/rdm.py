@@ -12,6 +12,10 @@ import diffuser.utils as utils
 from diffuser.models import TemporalUnet, GaussianDiffusion
 from diffuser.utils.serialization import DiffusionExperiment, get_latest_epoch
 import torch
+
+#######################
+# Helper functions
+#######################
 #fast replan helper
 def fast_replan(policy, diffusion_model, cond, sequence, plan_ptr, batch_size=1, diffusion_steps=100):  
     """  
@@ -19,26 +23,15 @@ def fast_replan(policy, diffusion_model, cond, sequence, plan_ptr, batch_size=1,
     and running a reduced number of diffusion steps.  
     """  
     device = next(diffusion_model.parameters()).device  
-      
-    # Convert sequence to tensor format  
     sequence_tensor = torch.tensor(sequence).float().unsqueeze(0).to(device)  
       
-    # Get current state condition  
     current_state = torch.tensor(cond[0]).float().unsqueeze(0).to(device)  
-      
-    # Create a prefix that includes the current state and part of the previous trajectory  
-    # This will be used with the 'future' replan mode  
     prefix_length = plan_ptr + 1  
-      
-    # Ensure we don't exceed the sequence length  
-    prefix_length = min(prefix_length, len(sequence))  
-      
-    # Create prefix states for the policy  
+    prefix_length = min(prefix_length, len(sequence))    
     prefix_states = sequence[:prefix_length]  
-    prefix_states[-1] = cond[0]  # Replace the last state with current state  
+    prefix_states[-1] = cond[0] 
     prefix_np = np.expand_dims(prefix_states, axis=0)  
-      
-    # Call policy with the prefix_states  
+
     _, samples = policy(  
         cond,  
         batch_size=batch_size,  
@@ -48,11 +41,6 @@ def fast_replan(policy, diffusion_model, cond, sequence, plan_ptr, batch_size=1,
     )  
       
     return samples
-#######################
-# Helper to load your diffusion experiment
-#######################
-ts = []       # list of timesteps
-L_vals = []   # corresponding log‐likelihood values
 def plot_loglikelihood(ts, L_vals, save_dir):
     """
     Plot and save the log‐likelihood (KL) curve.
@@ -98,12 +86,17 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
         dataset_obj, renderer, model, diffusion, trainer.ema_model, trainer, epoch
     )
 
-########################### Replanning determinator
+#######################
+# Replanning determinator
+#######################
 # 1) Hyperparameters for adaptive replanning
 ls       = 0.5       # full‐replan threshold (tune on validation)
 lf       = 0.7          # partial‐replan threshold (ls < lf)
 I        = [50,100,125,175,200]#[5,10,15] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step # 50,100,125,175,200
-
+ts = []       # list of timesteps
+L_vals = []   # corresponding log‐likelihood values
+horizon = 256   #trajectory length
+n_steps = 256   #diffusion steps
 # 2) Decision function
 def should_replan(diffusion, old_seq,rollout, cond, t, ls, lf, I):
     device = next(diffusion.parameters()).device
@@ -146,6 +139,8 @@ def should_replan(diffusion, old_seq,rollout, cond, t, ls, lf, I):
         return 'future',L_t
     else:
         return 'none',L_t
+
+
 #######################
 # Argument parsing
 #######################
@@ -162,8 +157,6 @@ args = Parser().parse_args('plan')
 env = datasets.load_environment(args.dataset)
 
 # Custom load of diffusion (to match your horizons)
-horizon = 256
-n_steps = 256
 diff_exp = load_diffusion_manual(
     args.logbase,
     args.dataset,
@@ -189,15 +182,16 @@ if args.conditional:
     env.set_target()
 target       = env._target
 
+# PD controller parameters 
 K            = 80     # replan every K steps
 Kp           = 0.58    # P–controller gain
-Kd = 0.7            # tune this
+Kd           = 0.7            # tune this
 prev_error = np.zeros(2)  
 rollout      = [observation.copy()]
 total_reward = 0.0
 sequence     = None
 plan_ptr     = 0
-L_t = 0 # temp holder
+L_t = 0      # temp holder
 global_history = rollout.copy()
 for t in range(400): #env.max_episode_steps
     state = env.state_vector().copy()
@@ -215,26 +209,6 @@ for t in range(400): #env.max_episode_steps
         _, samples = policy(cond, batch_size=args.batch_size,diffusion_steps = Ns,replan_mode = 'scratch')
         sequence   = samples.observations[0]   # (horizon, state_dim)
         plan_ptr   = 0
-
-        # # plot the (x,y) path
-        # plan_xy = sequence[:, :2]              # extract positions
-        # fig, ax = plt.subplots(figsize=(12, 12))
-        # ax.plot(plan_xy[:,0], plan_xy[:,1], '-o', markersize=3, label='plan')
-        # ax.scatter(plan_xy[0,0], plan_xy[0,1], s=50, marker='*', label='start')
-        # ax.scatter(plan_xy[-1,0], plan_xy[-1,1], s=50, marker='X', label='target')
-       
-        # ax.set_xlim(0,12)
-        # ax.set_ylim(0,12)
-
-        # ax.set_aspect('equal', 'box')
-        # ax.set_xlabel('x'); ax.set_ylabel('y')
-        # ax.set_title(f"Replan @ t={t}")
-        # ax.legend()
-        # plot_path = join(args.savepath, f'replan_plot_{t}.png')
-        # fig.savefig(plot_path)
-        # plt.close(fig)
-        # print(f" → saved replan plot to {plot_path}")
-
         # also save your composite if desired
         renderer.composite(
             join(args.savepath, f'plan_{t}.png'),
@@ -299,7 +273,6 @@ for t in range(400): #env.max_episode_steps
     pos_current = state[:2]
 
     # 3) Simple Pd–control on position
-    # action      = Kp * (pos_target - pos_current)
     error       = pos_target - pos_current       # [2]
     if t == 0:
         # no previous error yet → zero derivative
@@ -316,10 +289,11 @@ for t in range(400): #env.max_episode_steps
     plan_ptr = min(plan_ptr + 1, len(sequence)-1)
     ts.append(t)
     L_vals.append(L_t)
-    # 5) Check for termination
+    # 5) Check for termination # FIXME not actually works
     if terminal:
         print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
         break
+    # for debuging (output current planning trajectory vs current rollouts)
     if t% K ==0:
         current_waypoint = np.expand_dims(sequence, axis=0)   # sequence is the H×obs_dim future‐patched plan
         renderer.composite(
