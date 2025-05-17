@@ -12,7 +12,42 @@ import diffuser.utils as utils
 from diffuser.models import TemporalUnet, GaussianDiffusion
 from diffuser.utils.serialization import DiffusionExperiment, get_latest_epoch
 import torch
-
+#fast replan helper
+def fast_replan(policy, diffusion_model, cond, sequence, plan_ptr, batch_size=1, diffusion_steps=100):  
+    """  
+    Implements fast replanning by combining current conditions with previous trajectory  
+    and running a reduced number of diffusion steps.  
+    """  
+    device = next(diffusion_model.parameters()).device  
+      
+    # Convert sequence to tensor format  
+    sequence_tensor = torch.tensor(sequence).float().unsqueeze(0).to(device)  
+      
+    # Get current state condition  
+    current_state = torch.tensor(cond[0]).float().unsqueeze(0).to(device)  
+      
+    # Create a prefix that includes the current state and part of the previous trajectory  
+    # This will be used with the 'future' replan mode  
+    prefix_length = plan_ptr + 1  
+      
+    # Ensure we don't exceed the sequence length  
+    prefix_length = min(prefix_length, len(sequence))  
+      
+    # Create prefix states for the policy  
+    prefix_states = sequence[:prefix_length]  
+    prefix_states[-1] = cond[0]  # Replace the last state with current state  
+    prefix_np = np.expand_dims(prefix_states, axis=0)  
+      
+    # Call policy with the prefix_states  
+    _, samples = policy(  
+        cond,  
+        batch_size=batch_size,  
+        diffusion_steps=diffusion_steps,  
+        replan_mode='future',  
+        prefix_states=prefix_np  
+    )  
+      
+    return samples
 #######################
 # Helper to load your diffusion experiment
 #######################
@@ -54,7 +89,7 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
     if epoch == 'latest':
         #epoch = get_latest_epoch((logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')) #
         #FIXME hard code checkpoints
-        epoch = 80000 #200000
+        epoch = 200000 #200000
         print("Current horizon",horizon)
         print('current step',n_steps)
     trainer.load(epoch)
@@ -67,16 +102,22 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
 # 1) Hyperparameters for adaptive replanning
 ls       = 0.5       # full‐replan threshold (tune on validation)
 lf       = 0.7          # partial‐replan threshold (ls < lf)
-I        = [5,10,15] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step # 50,100,125,175,200
+I        = [50,100,125,175,200]#[5,10,15] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step # 50,100,125,175,200
 
 # 2) Decision function
-def should_replan(diffusion, old_seq, cond, t, ls, lf, I):
+def should_replan(diffusion, old_seq,rollout, cond, t, ls, lf, I):
     device = next(diffusion.parameters()).device
     # 2.1 Build partial trajectory tau0 with real observations
     tau0 = old_seq.copy()
-    for k in range(1, t+1):
-        tau0[k] = env.state_vector()  # replace with actual observed state
-
+    for k in range(0, t+1):
+        tau0[k] = rollout[k]  # replace with actual observed state
+    plan = np.expand_dims(tau0, axis=0)
+    renderer.composite(
+        join(args.savepath, f'ood_trajectory_m_t{t}.png'),
+        plan,
+        ncol=1
+    )
+    assert tau0.shape[0]==horizon
     # 2.2 Estimate average KL over selected timesteps
     kl_vals = []
     for i in I:
@@ -142,22 +183,23 @@ print(f"Evaluating with horizon={horizon}, n_steps={n_steps}")
 #######################
 # Main control loop
 #######################
-observation  = env.reset(seed = 42)
+observation  = env.reset(seed = 42) #42
 state        = env.state_vector().copy()
 if args.conditional:
     env.set_target()
 target       = env._target
 
-K            = 10     # replan every K steps
-Kp           = 7     # P–controller gain
-Kd = 0.8            # tune this
+K            = 80     # replan every K steps
+Kp           = 0.58    # P–controller gain
+Kd = 0.7            # tune this
 prev_error = np.zeros(2)  
 rollout      = [observation.copy()]
 total_reward = 0.0
 sequence     = None
 plan_ptr     = 0
 L_t = 0 # temp holder
-for t in range(800): #env.max_episode_steps
+global_history = rollout.copy()
+for t in range(400): #env.max_episode_steps
     state = env.state_vector().copy()
 
     # 1) init plan
@@ -174,24 +216,24 @@ for t in range(800): #env.max_episode_steps
         sequence   = samples.observations[0]   # (horizon, state_dim)
         plan_ptr   = 0
 
-        # plot the (x,y) path
-        plan_xy = sequence[:, :2]              # extract positions
-        fig, ax = plt.subplots(figsize=(12, 12))
-        ax.plot(plan_xy[:,0], plan_xy[:,1], '-o', markersize=3, label='plan')
-        ax.scatter(plan_xy[0,0], plan_xy[0,1], s=50, marker='*', label='start')
-        ax.scatter(plan_xy[-1,0], plan_xy[-1,1], s=50, marker='X', label='target')
+        # # plot the (x,y) path
+        # plan_xy = sequence[:, :2]              # extract positions
+        # fig, ax = plt.subplots(figsize=(12, 12))
+        # ax.plot(plan_xy[:,0], plan_xy[:,1], '-o', markersize=3, label='plan')
+        # ax.scatter(plan_xy[0,0], plan_xy[0,1], s=50, marker='*', label='start')
+        # ax.scatter(plan_xy[-1,0], plan_xy[-1,1], s=50, marker='X', label='target')
        
-        ax.set_xlim(0,12)
-        ax.set_ylim(0,12)
+        # ax.set_xlim(0,12)
+        # ax.set_ylim(0,12)
 
-        ax.set_aspect('equal', 'box')
-        ax.set_xlabel('x'); ax.set_ylabel('y')
-        ax.set_title(f"Replan @ t={t}")
-        ax.legend()
-        plot_path = join(args.savepath, f'replan_plot_{t}.png')
-        fig.savefig(plot_path)
-        plt.close(fig)
-        print(f" → saved replan plot to {plot_path}")
+        # ax.set_aspect('equal', 'box')
+        # ax.set_xlabel('x'); ax.set_ylabel('y')
+        # ax.set_title(f"Replan @ t={t}")
+        # ax.legend()
+        # plot_path = join(args.savepath, f'replan_plot_{t}.png')
+        # fig.savefig(plot_path)
+        # plt.close(fig)
+        # print(f" → saved replan plot to {plot_path}")
 
         # also save your composite if desired
         renderer.composite(
@@ -199,42 +241,58 @@ for t in range(800): #env.max_episode_steps
             samples.observations,
             ncol=1
         )
-    if t > 0 and t < diffusion.horizon and (t % K) == 0:
-        mode,L_t = should_replan(diffusion, sequence, cond, t, ls, lf, I)
+    if t < diffusion.horizon and (t % K) == 0:
+        mode,L_t = should_replan(diffusion, sequence,global_history, cond, plan_ptr, ls, lf, I)
     else:
         mode = None
     if mode == 'scratch':
         print(f"[t={t}] Replanning from start {state[:2]} to target {target} by scratch")
+        print(f"[t={t}] Full replanning; resetting rollout")
+        global_history = [env.state_vector().copy()]
         # full replanning (Algorithm 2)
+        # build conditioning dict
+        cond = {
+            0:                   state.copy(),
+            diffusion.horizon-1: np.array([*target, 0, 0])
+        }
         _, samples = policy(cond, batch_size=args.batch_size,diffusion_steps = Ns,replan_mode = 'scratch')
         sequence = samples.observations[0]
         # visualize the scratch replan
         rrtplan = np.expand_dims(sequence, axis=0)
         renderer.composite(
-            join(args.savepath, f'plan_rrt_t{t}.png'),
+            join(args.savepath, f'plan_scratch_t{t}.png'),
             rrtplan,
             ncol=1
         )
         plan_ptr = 0
-    elif mode == 'future':
-        print(f"[t={t}] Replanning from start {state[:2]} to target {target} by future")
-        # partial replanning (Algorithm 3):
-        # Keep states up to t, regenerate future tail
-        cond_new = {0: sequence[t], diffusion.horizon-1: cond[diffusion.horizon-1]}
-        _, samples_fut = policy(cond, batch_size=args.batch_size,diffusion_steps = Nf,replan_mode = 'future')
-        # splice new future onto executed prefix
-        horizon = diffusion.horizon
-        new_tail = samples_fut.observations[0][t:]     
-        sequence = np.concatenate([
-            sequence[:t],    
-            new_tail], axis=0) 
-        fplan = np.expand_dims(sequence, axis=0)   # sequence is the H×obs_dim future‐patched plan
-        renderer.composite(
-            join(args.savepath, f'plan_future_t{t}.png'),
-            fplan,
-            ncol=1
-        )        
-        plan_ptr = 0
+    elif mode == 'future':  
+        print(f"[t={t}] Partial replanning (future)")  
+        
+        # Use the modified fast_replan function  
+        samples_fut = fast_replan(  
+            policy=policy,  
+            diffusion_model=diffusion,  
+            cond=cond,  
+            sequence=sequence,  
+            plan_ptr=plan_ptr,  
+            batch_size=args.batch_size,  
+            diffusion_steps=Nf  
+        )  
+        
+        sequence = samples_fut.observations[0]  
+        
+        # Visualize and log  
+        print("current plan ptr is", plan_ptr)  
+        print("current state", state.copy())  
+        print("next way point is", sequence[plan_ptr])  
+        
+        fplan = np.expand_dims(sequence, axis=0)  
+        renderer.composite(  
+            join(args.savepath, f'plan_future_t{t}.png'),  
+            fplan,  
+            ncol=1  
+        )
+        # plan_ptr = 0
     # 2) Read current waypoint
     wp          = sequence[plan_ptr]        # [x,y,vx,vy]
     pos_target  = wp[:2]
@@ -253,7 +311,7 @@ for t in range(800): #env.max_episode_steps
     next_obs, reward, terminal, _ = env.step(action)
     total_reward += reward
     rollout.append(next_obs.copy())
-
+    global_history.append(next_obs.copy())
     # 4) Advance the pointer AFTER stepping
     plan_ptr = min(plan_ptr + 1, len(sequence)-1)
     ts.append(t)
@@ -262,6 +320,18 @@ for t in range(800): #env.max_episode_steps
     if terminal:
         print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
         break
+    if t% K ==0:
+        current_waypoint = np.expand_dims(sequence, axis=0)   # sequence is the H×obs_dim future‐patched plan
+        renderer.composite(
+                join(args.savepath, f'cur_wpt{t}.png'),
+                current_waypoint,
+                ncol=1
+            )
+        renderer.composite(
+                join(args.savepath, f'cur_rollout{t}.png'),
+                 np.array([rollout]),
+                ncol=1
+            )
 plot_loglikelihood(ts, L_vals, args.savepath)
 # 6) Final dump
 renderer.composite(
