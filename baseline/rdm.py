@@ -182,11 +182,7 @@ if args.conditional:
     env.set_target()
 target       = env._target
 
-# PD controller parameters 
 K            = 80     # replan every K steps
-Kp           = 0.58    # P–controller gain
-Kd           = 0.7            # tune this
-prev_error = np.zeros(2)  
 rollout      = [observation.copy()]
 total_reward = 0.0
 sequence     = None
@@ -267,22 +263,13 @@ for t in range(400): #env.max_episode_steps
             ncol=1  
         )
         # plan_ptr = 0
-    # 2) Read current waypoint
-    wp          = sequence[plan_ptr]        # [x,y,vx,vy]
-    pos_target  = wp[:2]
-    pos_current = state[:2]
+    next_waypoint  = sequence[plan_ptr]        # [x,y,vx,vy]
 
-    # 3) Simple Pd–control on position
-    error       = pos_target - pos_current       # [2]
-    if t == 0:
-        # no previous error yet → zero derivative
-        deriv = np.zeros_like(error)
-    else:
-        deriv = (error - prev_error) / 1.0      
-    action = Kp * error + Kd * deriv           
-    prev_error = error.copy()
+    ## can use actions or define a simple controller based on state predictions
+    action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
     next_obs, reward, terminal, _ = env.step(action)
     total_reward += reward
+    score = env.get_normalized_score(total_reward)
     rollout.append(next_obs.copy())
     global_history.append(next_obs.copy())
     # 4) Advance the pointer AFTER stepping
@@ -321,5 +308,4 @@ with open(join(args.savepath, 'rollout.json'), 'w') as f:
         'score':  env.get_normalized_score(total_reward)
     }, f, indent=2)
 
-print(f"Done. Steps={len(rollout)-1}, Return={total_reward:.2f}")
-
+print(f"Done. Steps={len(rollout)-1}, Return={total_reward:.2f},Score = {score:.2f}")
