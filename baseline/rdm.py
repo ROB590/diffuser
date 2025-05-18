@@ -77,7 +77,7 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
     if epoch == 'latest':
         #epoch = get_latest_epoch((logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')) #
         #FIXME hard code checkpoints
-        epoch = 200000 #200000
+        epoch = 980000 #200000
         print("Current horizon",horizon)
         print('current step',n_steps)
     trainer.load(epoch)
@@ -189,7 +189,7 @@ sequence     = None
 plan_ptr     = 0
 L_t = 0      # temp holder
 global_history = rollout.copy()
-for t in range(400): #env.max_episode_steps
+for t in range(env.max_episode_steps): #env.max_episode_steps
     state = env.state_vector().copy()
 
     # 1) init plan
