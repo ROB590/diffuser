@@ -18,7 +18,7 @@ def import_class(_class):
     print(f'[ utils/config ] Imported {repo_name}.{module_name}:{class_name}')
     return _class
 
-class Config(collections.Mapping):
+class Config(collections.Mapping):  #FIXME for 3.10 compatibility
 
     def __init__(self, _class, verbose=True, savepath=None, device=None, **kwargs):
         self._class = import_class(_class)
