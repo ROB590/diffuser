@@ -22,15 +22,16 @@ def fast_replan(policy, diffusion_model, cond, sequence, plan_ptr, batch_size=1,
     Implements fast replanning by combining current conditions with previous trajectory  
     and running a reduced number of diffusion steps.  
     """  
-    device = next(diffusion_model.parameters()).device  
-    sequence_tensor = torch.tensor(sequence).float().unsqueeze(0).to(device)  
-      
-    current_state = torch.tensor(cond[0]).float().unsqueeze(0).to(device)  
-    prefix_length = plan_ptr + 1  
-    prefix_length = min(prefix_length, len(sequence))    
-    prefix_states = sequence[:prefix_length]  
-    prefix_states[-1] = cond[0] 
+
+    prefix_states = sequence[plan_ptr : plan_ptr+1]   # 只保留 s̄_k
     prefix_np = np.expand_dims(prefix_states, axis=0)  
+    
+    tail = sequence[plan_ptr+1:]  
+    need = policy.horizon - (1 + len(tail))
+    repeat_block = np.repeat(tail[-1:], need, axis=0)
+    
+    init_traj = np.concatenate([prefix_states, tail, repeat_block], axis=0)
+    assert init_traj.shape[0] == policy.horizon              # (H, obs_dim)
 
     _, samples = policy(  
         cond,  
@@ -91,7 +92,7 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
 #######################
 # 1) Hyperparameters for adaptive replanning
 ls       = 0.5       # full‐replan threshold (tune on validation)
-lf       = 0.7          # partial‐replan threshold (ls < lf)
+lf       = 0.8          # partial‐replan threshold (ls < lf)
 I        = [50,100,125,175,200]#[5,10,15] # diffusion steps to sample for KL estimate #NOTE must smaller than the diffusion noise step # 50,100,125,175,200
 ts = []       # list of timesteps
 L_vals = []   # corresponding log‐likelihood values
@@ -211,7 +212,7 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
             samples.observations,
             ncol=1
         )
-    if t < diffusion.horizon and (t % K) == 0:
+    if t % K == 0:
         mode,L_t = should_replan(diffusion, sequence,global_history, cond, plan_ptr, ls, lf, I)
     else:
         mode = None
@@ -236,6 +237,8 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
         )
         plan_ptr = 0
     elif mode == 'future':  
+        cond = {0: state.copy(), diffusion.horizon-1: np.array([*target, 0, 0])}
+
         print(f"[t={t}] Partial replanning (future)")  
         
         # Use the modified fast_replan function  
@@ -262,7 +265,7 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
             fplan,  
             ncol=1  
         )
-        # plan_ptr = 0
+        plan_ptr = 0
     next_waypoint  = sequence[plan_ptr]        # [x,y,vx,vy]
 
     ## can use actions or define a simple controller based on state predictions
@@ -284,7 +287,7 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
     if t% K ==0:
         current_waypoint = np.expand_dims(sequence, axis=0)   # sequence is the H×obs_dim future‐patched plan
         renderer.composite(
-                join(args.savepath, f'cur_wpt{t}.png'),
+                join(args.savepath, f'cur_planning trajectory{t}.png'),
                 current_waypoint,
                 ncol=1
             )
