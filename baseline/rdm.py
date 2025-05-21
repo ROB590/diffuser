@@ -12,7 +12,8 @@ import diffuser.utils as utils
 from diffuser.models import TemporalUnet, GaussianDiffusion
 from diffuser.utils.serialization import DiffusionExperiment, get_latest_epoch
 import torch
-
+from environment import maze2d
+seed = maze2d.ensure_seed()
 #######################
 # Helper functions
 #######################
@@ -176,13 +177,13 @@ print(f"Evaluating with horizon={horizon}, n_steps={n_steps}")
 #######################
 # Main control loop
 #######################
-observation  = env.reset(seed = 42) #42
+observation  = env.reset(seed = seed) #42
 state        = env.state_vector().copy()
 if args.conditional:
     env.set_target()
 target       = env._target
 
-K            = 80     # replan every K steps
+K            = 100     # replan every K steps
 rollout      = [observation.copy()]
 total_reward = 0.0
 sequence     = None
@@ -267,6 +268,11 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
 
     ## can use actions or define a simple controller based on state predictions
     action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
+    if t == 100:
+        print("Interfer starts")
+        offset = maze2d.teleport_agent(env, level='largetr=')
+        print(f"[t={t}] Teleported by {offset}")
+        continue
     next_obs, reward, terminal, _ = env.step(action)
     total_reward += reward
     score = env.get_normalized_score(total_reward)

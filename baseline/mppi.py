@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 
 from diffuser.datasets import load_environment
 import diffuser.utils as utils
-
+from environment import maze2d
+seed = maze2d.ensure_seed()
 
 class MPPIController:
     def __init__(self,
@@ -136,7 +137,7 @@ def main():
 
     # The “real” env we’ll step through
     env = make_env()
-    obs = env.reset(seed=42)
+    obs = env.reset(seed=seed)
     if args.conditional:
         env.set_target()
     target = env._target
@@ -170,7 +171,11 @@ def main():
     for t in range(env.max_episode_steps):
         state = env.state_vector().copy()
         action = mppi.step(state)
-
+        if t == 100:
+            print("Interfer starts")
+            offset = maze2d.teleport_agent(env, level='large')
+            print(f"[t={t}] Teleported by {offset}")
+            continue
         obs, reward, done, _ = env.step(action)
         total_reward += reward
         rollout.append(obs.copy())
