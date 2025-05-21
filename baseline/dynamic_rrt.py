@@ -13,8 +13,9 @@ import diffuser.utils as utils
 import math, random
 from environment import maze2d
 from environment.maze2d import in_collision 
+import time
 seed = maze2d.ensure_seed()
-def collision_free2(env, p1, p2, step_size=0.1):
+def collision_free2(env, p1, p2, step_size=0.05):
     p1 = np.array(p1, dtype=np.float32)
     p2 = np.array(p2, dtype=np.float32)
     vec = p2 - p1
@@ -82,7 +83,7 @@ def rrt_connect(env,start, goal,
             path.append((node.x, node.y))
             node = node.parent
         return path[::-1]
-    def collision_free_segment(env, p1, p2, step_size=0.1):
+    def collision_free_segment(env, p1, p2, step_size=0.5):
         """
         Returns True iff the straight line path from p1→p2
         never collides (according to in_collision) when sampled
@@ -94,8 +95,8 @@ def rrt_connect(env,start, goal,
         dist = np.linalg.norm(vec)
         if dist == 0:
             return not in_collision(env, p1)
-        n_steps = int(np.ceil(dist / step_size))
-        for i in range(n_steps + 1):
+        n_steps = int(np.ceil(dist / step_size)) # sometimes start point may contact need replan
+        for i in range(1,n_steps + 1):
             q = p1 + vec * (i / n_steps)
             if in_collision(env, q):
                 return False
@@ -112,11 +113,14 @@ def rrt_connect(env,start, goal,
         # 2) Extend start‐tree
         near_s = nearest(tree_s, rnd)
         new_s  = steering(near_s, rnd)
+        #print('befor collision checking',env.state_vector())
         if in_collision(env, [(new_s.x, new_s.y)]):
+            #print('after collision checking',env.state_vector())
             continue
+        #print('after collision checking',env.state_vector())
         if not collision_free_segment(env,
                                (near_s.x, near_s.y),
-                               (new_s.x, new_s.y),step_size=extend_len / 2):
+                               (new_s.x, new_s.y),step_size=0.5):
             continue
         tree_s.append(new_s)
 
@@ -128,7 +132,7 @@ def rrt_connect(env,start, goal,
         if not collision_free_segment(env,
                               (near_s.x, near_s.y),
                               (new_s.x, new_s.y),
-                              step_size=extend_len / 2):
+                              step_size=extend_len ):
             continue
         tree_g.append(new_g)
 
@@ -136,7 +140,7 @@ def rrt_connect(env,start, goal,
         if not in_collision(env, [(new_g.x, new_g.y)]):
             if not collision_free_segment(env,
                                (new_s.x, new_s.y),
-                               (new_g.x, new_g.y),step_size=extend_len / 2):
+                               (new_g.x, new_g.y),step_size=extend_len):
                 continue
             tree_g.append(new_g)
             if math.hypot(new_s.x - new_g.x, new_s.y - new_g.y) < 1e-6:
@@ -153,17 +157,17 @@ def rrt_connect(env,start, goal,
     return None
 def rrt_star(env, start, goal,
              max_iter=10000,
-             extend_len=0.2,
-             neighbor_radius=0.05,
-             goal_radius=0.05,
+             extend_len=0.1,
+             neighbor_radius=0.1,
+             goal_radius=0.1,
              vis_every=500):
     """
     Single‐tree RRT* with debug logging and optional visualization.
     """
-    print("maxiter",max_iter)
-    print("extend len",extend_len)
-    print("neighbor_radius",neighbor_radius)
-    print("goal_radius",goal_radius)
+    # print("maxiter",max_iter)
+    # print("extend len",extend_len)
+    # print("neighbor_radius",neighbor_radius)
+    # print("goal_radius",goal_radius)
     # 1) Node now carries a cost‐to‐come
     class Node:
         __slots__ = ('x','y','parent','cost')
@@ -215,27 +219,33 @@ def rrt_star(env, start, goal,
     # Initialize
     tree = [Node(start[0], start[1], parent=None, cost=0.0)]
     #print("max_iter",max_iter)
-    print("debug rrt star",env.state_vector())
-    print("does start point collide",in_collision(env,start))
+    # print("debug rrt star",env.state_vector())
+    # print("does start point collide",in_collision(env,start))
+    # print('x limit',env.unwrapped.maze_arr.shape[0])
+    # print('y limit',env.unwrapped.maze_arr.shape[1])
     for it in range(1, max_iter+1):
         # — SAMPLE —
         rnd = (
             random.uniform(0, env.unwrapped.maze_arr.shape[0]),
             random.uniform(0, env.unwrapped.maze_arr.shape[1])
         )
-        # print("random point is",rnd)
+        #print("random point is",rnd)
         # — EXTEND —
         near     = nearest(tree, rnd)
         new_node = steering(near, rnd)
 
         # collision check
+        #print('befor collision checking',env.state_vector())
         if in_collision(env, (new_node.x, new_node.y)):
+            #print('after collision checking',env.state_vector())
             continue
-        if not collision_free_segment(env,
-                                      (near.x, near.y),
-                                      (new_node.x, new_node.y),
-                                      step_size=0.1):
-            continue
+        #print('after collision checking',env.state_vector())
+        # if not collision_free_segment(env,
+        #                               (near.x, near.y),
+        #                               (new_node.x, new_node.y),
+        #                               step_size=extend_len):
+        #     print("skip at iter due to line collision",it)
+        #     continue
 
         # — GATHER NEIGHBORS —
         nbrs = [
@@ -258,7 +268,7 @@ def rrt_star(env, start, goal,
                 and collision_free_segment(env,
                                            (nbr.x, nbr.y),
                                            (new_node.x, new_node.y),
-                                           step_size=extend_len/2)):
+                                           step_size=extend_len)):
                 best_cost   = c_through
                 best_parent = nbr
 
@@ -274,7 +284,7 @@ def rrt_star(env, start, goal,
                 and collision_free_segment(env,
                                            (new_node.x, new_node.y),
                                            (nbr.x, nbr.y),
-                                           step_size=extend_len/2)):
+                                           step_size=extend_len)):
                 nbr.parent = new_node
                 nbr.cost   = c_via_new
 
@@ -303,6 +313,7 @@ def rrt_star(env, start, goal,
         #     plt.legend(); plt.show()
 
         # — GOAL CHECK —
+        # print(goal_radius)
         if best_dist <= goal_radius:
             # find the node closest to goal
             goal_node = min(tree,
@@ -314,11 +325,11 @@ def rrt_star(env, start, goal,
     return None
 class DynamicRRTStarController:
     def __init__(self, env, goal,
-                 step_size=0.05,
-                 radius=0.01,
-                 replan_thresh=2,
+                 step_size=0.1,
+                 radius=0.1,
+                 replan_thresh=1.3, # different for small medium and large
                  grow_iters=2000,
-                 n_steps=256,K = 100):               # ← new parameter
+                 n_steps=256,K = 50):               # ← new parameter
         self.env           = env
         self.goal          = np.array(goal, dtype=np.float32)
         self.step_size     = step_size
@@ -336,8 +347,8 @@ class DynamicRRTStarController:
                              goal=self.goal,
                              max_iter=self.grow_iters,
                              extend_len=self.step_size,
-                             neighbor_radius=self.radius,
-                             goal_radius=self.step_size)
+                             neighbor_radius=0.1,
+                             goal_radius=0.1)
         if full_path is None:
             raise RuntimeError("Initial RRT* failed")
         # Resample to exactly n_steps
@@ -345,11 +356,11 @@ class DynamicRRTStarController:
         self.vel_path = []
         for i in range(len(self.path)-1):
             p0 = np.array(self.path[i]); p1 = np.array(self.path[i+1])
-            self.vel_path.append((p1 - p0) / 1)
+            self.vel_path.append((p1 - p0) /0.1)
         # For the final point, assume zero velocity:
         self.vel_path.append(np.zeros_like(self.vel_path[0]))
-        print(f"Initial path length: {len(self.path)} waypoints")
-        print("current path is",self.path)
+        #print(f"Initial path length: {len(self.path)} waypoints")
+        #print("current path is",self.path)
         self.ptr = 0
 
     # def _resample_path(self, raw_path):
@@ -399,62 +410,51 @@ class DynamicRRTStarController:
     #     x_smooth, y_smooth = splev(u_fine, tck)
 
     #     return list(zip(x_smooth, y_smooth))
+    # def _resample_path(self, path):
+    #     """Downsample or pad path to exactly self.n_steps waypoints."""
+    #     M = len(path)
+    #     if M >= self.n_steps:
+    #         # pick evenly spaced indices from 0..M-1
+    #         idxs = np.linspace(0, M-1, self.n_steps, dtype=int)
+    #         path =  [path[i] for i in idxs]
+    #     else:
+    #         # pad with the final point
+    #         #path = path + [path[-1]] * (self.n_steps - M)
+    #         # interpolate to upsample from M→n_steps
+    #         pts = np.array(path, dtype=float)            # shape (M,2)
+    #         xs, ys = pts[:, 0], pts[:, 1]
+    #         # target "fractional" indices along original [0, M-1]
+    #         idxs_f = np.linspace(0, M - 1, self.n_steps)
+    #         xs_new = np.interp(idxs_f, np.arange(M), xs)
+    #         ys_new = np.interp(idxs_f, np.arange(M), ys)
+    #         path =  list(zip(xs_new.tolist(), ys_new.tolist()))
+    #     return path
     def _resample_path(self, path):
         """Downsample or pad path to exactly self.n_steps waypoints."""
         M = len(path)
         if M >= self.n_steps:
             # pick evenly spaced indices from 0..M-1
             idxs = np.linspace(0, M-1, self.n_steps, dtype=int)
-            path =  [path[i] for i in idxs]
+            return [path[i] for i in idxs]
         else:
             # pad with the final point
-            path = path + [path[-1]] * (self.n_steps - M)
-        return path
-    # def _resample_path(self, path):
-    #     # 1) Extract and parameterize
-    #     xs, ys = zip(*path)
-    #     dists = [0.0]
-    #     for i in range(1, len(xs)):
-    #         dx = xs[i] - xs[i-1]
-    #         dy = ys[i] - ys[i-1]
-    #         dists.append(dists[-1] + math.hypot(dx, dy))
-    #     total_length = dists[-1]
-    #     if total_length == 0 or len(path) < 4:
-    #         # degenerate: just pad/truncate
-    #         pts = path + [path[-1]]*(self.n_steps-len(path))
-    #         return pts[:self.n_steps]
-
-    #     u_raw = [d/total_length for d in dists]
-
-    #     # 2) Fit smoothing B-spline
-    #     smooth_factor = total_length * (self.step_size**2)
-    #     # ensure enough points for k=3
-    #     k = min(3, len(xs)-1)
-    #     tck, _ = splprep([xs, ys],
-    #                     u=u_raw,
-    #                     s=smooth_factor,
-    #                     k=k)
-
-    #     # 3) Sample exactly n_steps
-    #     u_fine = np.linspace(0, 1, self.n_steps)
-    #     x_s, y_s = splev(u_fine, tck)
-    #     return list(zip(x_s, y_s))
+            return path + [path[-1]] * (self.n_steps - M)
     def _replan(self):
         print("Replanning RRT*…")
         start = self.env.state_vector()[:2].copy()
-        print("replan start point is",start)
-        print("goal",self.goal)
+        #print("replan start point is",start)
+        #print("goal",self.goal)
         full_path = rrt_star(self.env,
                              start=start,
                              goal=self.goal,
                              max_iter=self.grow_iters,
                              extend_len=self.step_size,
-                             neighbor_radius=self.radius,
-                             goal_radius=self.step_size)
+                             neighbor_radius=0.1,
+                             goal_radius=0.1)
         if full_path:
             self.path = self._resample_path(full_path)
-            print("current path is",self.path)
-            print(f"New path length: {len(self.path)} waypoints")
+            #print("current path is",self.path)
+            #print(f"New path length: {len(self.path)} waypoints")
             self.vel_path = []
             for i in range(len(self.path)-1):
                 p0 = np.array(self.path[i]); p1 = np.array(self.path[i+1])
@@ -462,6 +462,8 @@ class DynamicRRTStarController:
         # For the final point, assume zero velocity:
             self.vel_path.append(np.zeros_like(self.vel_path[0]))
             self.ptr = 0
+        else:
+            raise RuntimeError('no solution')
         return
     def collision_free(self,env, p1, p2, step_size=0.1):
         p1 = np.array(p1, dtype=np.float32)
@@ -501,8 +503,8 @@ class DynamicRRTStarController:
                              goal=self.goal,
                              max_iter=self.grow_iters,
                              extend_len=self.step_size,
-                             neighbor_radius=self.radius,
-                             goal_radius=self.step_size)
+                             neighbor_radius=0.1,
+                             goal_radius=0.1)
         if new_tail is None:
             return False  # repair failed; might need full replan
 
@@ -511,14 +513,15 @@ class DynamicRRTStarController:
         self.ptr = invalid_idx
         return True
     def get_action(self):
+        #print("current path ptr is",self.ptr)
         pos = self.env.state_vector()[:2].copy()
-        print("before action",pos)
-        vel = self.env.state_vector()[2:]
+        #print("before action",pos)
+        vel = self.env.state_vector()[2:].copy()
         # replan if out of bounds
         # position waypoint
         idx = min(len(self.path)-1,self.ptr) #ignore first 
         wp = np.array(self.path[idx])
-        deviation = np.linalg.norm(pos - self.last_pos)
+        deviation = np.linalg.norm(pos - wp)
         no_replan = True
         # print("before dev",self.ptr)
         # print("bcurrent pos is",pos)
@@ -538,10 +541,10 @@ class DynamicRRTStarController:
         #     wp = np.array(self.path[idx]) 
         #     # assert self.ptr == 0
         #     print('larger than thresh')
-        print("deviation",deviation)
-        print(self.replan_thresh)
+        #print("deviation",deviation)
+        #print(self.replan_thresh)
         # repaired = self._invalidate_and_repair()
-        if deviation > self.replan_thresh and self.counter% self.K ==0:
+        if deviation > self.replan_thresh and self.counter % self.K ==0:
             # fallback full replan once
             print("Local repair needed; replanning")
             self._replan()
@@ -566,8 +569,8 @@ class DynamicRRTStarController:
         #     self.ptr += 1
         # else:
         #     print("not reach due to error",np.linalg.norm(pos - wp))
-        if no_replan:
-            self.ptr +=1
+
+        self.ptr +=1
         return action
 
 def load_diffusion_env(logbase, dataset, horizon, n_steps, device):
@@ -584,6 +587,7 @@ def load_diffusion_env(logbase, dataset, horizon, n_steps, device):
     return render
 def main():
      # Parse arguments (uses diffuser.utils.Parser for consistency)
+    start = time.time()
     class Parser(utils.Parser):
         dataset:       str   = 'maze2d-large-v1'
         config:        str   = 'config.maze2d'
@@ -592,7 +596,7 @@ def main():
         sigma:         float = 0.3
         lambda_:       float = 1.0
         replan_period: int   = 100
-        replan_thresh: float = 3
+        replan_thresh: float = 1.3
         vis_freq:      int   = 50
     args = Parser().parse_args('plan')
 
@@ -602,7 +606,7 @@ def main():
 
     # The “real” env we’ll step through
     env = make_env()
-    obs = env.reset(seed=42)
+    obs = env.reset(seed=seed)
     if args.conditional:
         env.set_target()
     target = env._target
@@ -617,45 +621,52 @@ def main():
     drrt = DynamicRRTStarController(
         env,
         goal=target,
-        step_size=0.05,
-        radius=0.05,
+        step_size=0.1,
+        radius=0.1,
         replan_thresh=args.replan_thresh,
-        grow_iters=200000
+        grow_iters=400000
     )
     n_steps = 256 # FIXME should be args.n_steps
-    renderer = load_diffusion_env( 
-        args.logbase,
-        args.dataset,
-        horizon=args.horizon,
-        n_steps= n_steps,
-        device=args.device
-        )
+    # renderer = load_diffusion_env( 
+    #     args.logbase,
+    #     args.dataset,
+    #     horizon=args.horizon,
+    #     n_steps= n_steps,
+    #     device=args.device
+    #     )
     rollout = [obs.copy()]
     total_reward = 0.0
 
-    for t in range(env.max_episode_steps):
+    for t in range(1600): #
         # breakpoint()
         if t == 100:
             print("Interfer starts")
-            offset = maze2d.teleport_agent(env, level='large')
+            offset = maze2d.teleport_agent(env, level='medium')
             print(f"[t={t}] Teleported by {offset}")
+            print("after deviation",env.state_vector())
         action = drrt.get_action()           # uses dynamic RRT*
         obs, reward, done, _ = env.step(action)
         total_reward += reward
         rollout.append(obs.copy())
-        print("t",t)
+        #print("obs",obs)
+        # print("t",t)
         # visualize
-        if t % 100 == 0 or done:
-            renderer.composite(
-                join(args.savepath, f'cur_rollout{t}.png'),
-                 np.array([rollout]),
-                ncol=1
-            )
-            renderer.composite(
-                join(args.savepath, f'cur_rrt_plan{t}.png'),
-                 np.array([drrt.path]),
-                ncol=1
-            )
+        # if t % 100 == 0 or done:
+            # rollout[0] = [ 2.65957033, 7.55172337  ,1.50555543,-0.14947117]
+            # if t!= 0:
+            #     rollout[1]=[-4,10,1.50555543,-0.14947117]
+            # renderer.composite(
+            #     join(args.savepath, f'cur_rollout{t}.png'),
+            #      np.array([rollout]),
+            #     ncol=1
+            # )
+            # renderer.composite(
+            #     join(args.savepath, f'cur_rrt_plan{t}.png'),
+            #      np.array([drrt.path]),
+            #     ncol=1
+            # )
+            #print('drrt path',drrt.path)
+            #print('drrt vpath',drrt.vel_path)
             # waypoints = drrt.path[:t]
             # rollout_pts = rollout
 
@@ -688,9 +699,10 @@ def main():
 
             # plt.tight_layout()
             # plt.show()
-            if done:
-                print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
-                break
+        if maze2d.check_done(env):
+            print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
+            end = time.time()
+            #break
 
     # save metrics
     with open(join(args.savepath, 'drrt_rollout.json'),'w') as f:
@@ -700,6 +712,10 @@ def main():
             'success': bool(done)
         }, f, indent=2)
     score = env.get_normalized_score(total_reward)
+    if end == None:
+        end = time.time()
+    time_taken = start - end
+    print(f"Elapsed: {time_taken:.4f} s")
     print(f"Dynamic RRT* done: steps={len(rollout)-1}, return={total_reward:.2f},score = {score:.2f}")
 
 if __name__ == "__main__":

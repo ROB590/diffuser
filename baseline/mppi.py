@@ -11,7 +11,7 @@ from diffuser.datasets import load_environment
 import diffuser.utils as utils
 from environment import maze2d
 seed = maze2d.ensure_seed()
-
+import time
 class MPPIController:
     def __init__(self,
                  master_env,
@@ -121,6 +121,8 @@ def load_diffusion_env(logbase, dataset, horizon, n_steps, device):
 
 def main():
     # Parse arguments (uses diffuser.utils.Parser for consistency)
+    start = time.time()
+    end = None
     class Parser(utils.Parser):
         dataset:       str   = 'maze2d-large-v1'
         config:        str   = 'config.maze2d'
@@ -153,13 +155,13 @@ def main():
         replan_period = args.replan_period
     )
     n_steps = 256 # FIXME should be args.n_steps
-    renderer = load_diffusion_env( 
-        args.logbase,
-        args.dataset,
-        horizon=args.horizon,
-        n_steps= n_steps,
-        device=args.device
-        )
+    # renderer = load_diffusion_env( 
+    #     args.logbase,
+    #     args.dataset,
+    #     horizon=args.horizon,
+    #     n_steps= n_steps,
+    #     device=args.device
+    #     )
     # Initialize MPPI’s internal state
     start_state = env.state_vector().copy()
     mppi.reset(start_state, target)
@@ -168,12 +170,12 @@ def main():
     total_reward = 0.0
 
     # Main loop
-    for t in range(env.max_episode_steps):
+    for t in range(1600):
         state = env.state_vector().copy()
         action = mppi.step(state)
         if t == 100:
             print("Interfer starts")
-            offset = maze2d.teleport_agent(env, level='large')
+            offset = maze2d.teleport_agent(env, level='medium')
             print(f"[t={t}] Teleported by {offset}")
             continue
         obs, reward, done, _ = env.step(action)
@@ -181,16 +183,18 @@ def main():
         rollout.append(obs.copy())
 
         # Optional: visualize occasionally
-        if t % args.replan_period == 0 :
-            renderer.composite(
-                join(args.savepath, f'cur_rollout{t}.png'),
-                 np.array([rollout]),
-                ncol=1
-            )
+        # if t % args.replan_period == 0 :
+        #     renderer.composite(
+        #         join(args.savepath, f'cur_rollout{t}.png'),
+        #          np.array([rollout]),
+        #         ncol=1
+        #     )
 
-        if done:
+        if maze2d.check_done(env):
             print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
-            break
+            end = time.time()
+            #print(f"Elapsed: {end - start:.4f} s")
+            #break
 
     # Save rollout and metrics
     with open(join(args.savepath, 'mppi_rollout.json'), 'w') as f:
@@ -200,6 +204,10 @@ def main():
             'success': bool(done)
         }, f, indent=2)
     score = env.get_normalized_score(total_reward)
+    if end == None:
+        end = time.time()
+    time_taken = start - end
+    print(f"Elapsed: {time_taken:.4f} s")
     print(f"MPPI done: steps={len(rollout)-1}, return={total_reward:.2f}, score = {score:.2f}")
 
 

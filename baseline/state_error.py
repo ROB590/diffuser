@@ -13,6 +13,7 @@ from diffuser.models import TemporalUnet, GaussianDiffusion
 from diffuser.utils.serialization import DiffusionExperiment, get_latest_epoch
 import torch
 from environment import maze2d
+import time
 #######################
 # Helper functions
 #######################
@@ -53,7 +54,8 @@ horizon = 256   #trajectory length
 n_steps = 256   #diffusion steps
 
 
-
+start = time.time()
+end = None
 #######################
 # Argument parsing
 #######################
@@ -104,7 +106,7 @@ sequence     = None
 plan_ptr     = 0
 err_thresh = 0.3 # state error threshold
 global_history = rollout.copy()
-for t in range(env.max_episode_steps): #env.max_episode_steps
+for t in range(1600): #env.max_episode_steps
     state = env.state_vector().copy()
 
     # 1) init plan
@@ -121,11 +123,11 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
         sequence   = samples.observations[0]   # (horizon, state_dim)
         plan_ptr   = 0
         # also save your composite if desired
-        renderer.composite(
-            join(args.savepath, f'plan_{t}.png'),
-            samples.observations,
-            ncol=1
-        )
+        # renderer.composite(
+        #     join(args.savepath, f'plan_{t}.png'),
+        #     samples.observations,
+        #     ncol=1
+        # )
     wp_current = sequence[plan_ptr]
     pos_err    = np.linalg.norm(wp_current[:2] - state[:2])
     if pos_err > err_thresh and t% K ==0:
@@ -144,8 +146,8 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
             sequence = samples.observations[0]
             plan_ptr = 0
             # visualize the new plan
-            renderer.composite(join(args.savepath, f'plan_replan_{t}.png'),
-                               samples.observations, ncol=1)
+            # renderer.composite(join(args.savepath, f'plan_replan_{t}.png'),
+            #                    samples.observations, ncol=1)
     # 2) Read current waypoint
 
     next_waypoint  = sequence[plan_ptr]        # [x,y,vx,vy]
@@ -154,7 +156,7 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
     action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
     if t == 100:
         print("Interfer starts")
-        offset = maze2d.teleport_agent(env, level='large')
+        offset = maze2d.teleport_agent(env, level='medium')
         print(f"[t={t}] Teleported by {offset}")
         continue
     next_obs, reward, terminal, _ = env.step(action)
@@ -165,29 +167,30 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
     # 4) Advance the pointer AFTER stepping
     plan_ptr = min(plan_ptr + 1, len(sequence)-1)
     ts.append(t)
-    # 5) Check for termination # FIXME not actually works
-    if terminal:
-        print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
-        break
     # for debuging (output current planning trajectory vs current rollouts)
-    if t% K ==0:
-        current_waypoint = np.expand_dims(sequence, axis=0)   # sequence is the H×obs_dim future‐patched plan
-        renderer.composite(
-                join(args.savepath, f'cur_wpt{t}.png'),
-                current_waypoint,
-                ncol=1
-            )
-        renderer.composite(
-                join(args.savepath, f'cur_rollout{t}.png'),
-                 np.array([rollout]),
-                ncol=1
-            )
+    # if t% K ==0:
+    #     current_waypoint = np.expand_dims(sequence, axis=0)   # sequence is the H×obs_dim future‐patched plan
+    #     renderer.composite(
+    #             join(args.savepath, f'cur_wpt{t}.png'),
+    #             current_waypoint,
+    #             ncol=1
+    #         )
+    #     renderer.composite(
+    #             join(args.savepath, f'cur_rollout{t}.png'),
+    #              np.array([rollout]),
+    #             ncol=1
+    #         )
+     # 5) Check for termination # FIXME not actually works
+    if maze2d.check_done(env):
+        print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
+        end = time.time()
+        #break
 # 6) Final dump
-renderer.composite(
-    join(args.savepath, 'final_rollout.png'),
-    np.array([rollout]),
-    ncol=1
-)
+# renderer.composite(
+#     join(args.savepath, 'final_rollout.png'),
+#     np.array([rollout]),
+#     ncol=1
+# )
 with open(join(args.savepath, 'rollout.json'), 'w') as f:
     json.dump({
         'step':  t,
@@ -195,6 +198,9 @@ with open(join(args.savepath, 'rollout.json'), 'w') as f:
         'term':   terminal,
         'score':  env.get_normalized_score(total_reward)
     }, f, indent=2)
-
+if end == None:
+    end = time.time()
+time_taken = start - end
+print(f"Elapsed: {time_taken:.4f} s")
 print(f"Done. Steps={len(rollout)-1}, Return={total_reward:.2f},Score = {score:.2f}")
 

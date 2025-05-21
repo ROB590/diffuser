@@ -34,7 +34,7 @@ def teleport_agent(env, level: str,seed = 42,max_attempts = 100):
     original_state = env.unwrapped.sim.get_state()
     frac_map = {'small': 0.1, 'medium': 0.3, 'large': 0.6}
     f = frac_map[level]
-    max_extent = 7 # np.max(env.observation_space.high[:2])
+    max_extent = 5 # np.max(env.observation_space.high[:2])
     for _ in range(max_attempts):
         # sample random offset
         offset = (np.random.rand(2)*2 - 1) * f * max_extent
@@ -82,3 +82,5 @@ def in_collision(env, q=None, ground_names=None):
     env.sim.forward()
     return False
 
+def check_done(env,tol = 0.15):  #from reward logic of maze2d
+    return np.linalg.norm(env.state_vector()[:2]- env._target) < tol

@@ -13,6 +13,7 @@ from diffuser.models import TemporalUnet, GaussianDiffusion
 from diffuser.utils.serialization import DiffusionExperiment, get_latest_epoch
 import torch
 from environment import maze2d
+import time
 seed = maze2d.ensure_seed()
 #######################
 # Helper functions
@@ -106,11 +107,11 @@ def should_replan(diffusion, old_seq,rollout, cond, t, ls, lf, I):
     for k in range(0, t+1):
         tau0[k] = rollout[k]  # replace with actual observed state
     plan = np.expand_dims(tau0, axis=0)
-    renderer.composite(
-        join(args.savepath, f'ood_trajectory_m_t{t}.png'),
-        plan,
-        ncol=1
-    )
+    # renderer.composite(
+    #     join(args.savepath, f'ood_trajectory_m_t{t}.png'),
+    #     plan,
+    #     ncol=1
+    # )
     assert tau0.shape[0]==horizon
     # 2.2 Estimate average KL over selected timesteps
     kl_vals = []
@@ -145,6 +146,8 @@ def should_replan(diffusion, old_seq,rollout, cond, t, ls, lf, I):
 #######################
 # Argument parsing
 #######################
+start = time.time()
+end = None
 class Parser(utils.Parser):
     dataset: str = 'maze2d-large-v1'
     config:  str = 'config.maze2d'
@@ -190,7 +193,7 @@ sequence     = None
 plan_ptr     = 0
 L_t = 0      # temp holder
 global_history = rollout.copy()
-for t in range(env.max_episode_steps): #env.max_episode_steps
+for t in range(1600): #env.max_episode_steps
     state = env.state_vector().copy()
 
     # 1) init plan
@@ -207,11 +210,11 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
         sequence   = samples.observations[0]   # (horizon, state_dim)
         plan_ptr   = 0
         # also save your composite if desired
-        renderer.composite(
-            join(args.savepath, f'plan_{t}.png'),
-            samples.observations,
-            ncol=1
-        )
+        # renderer.composite(
+        #     join(args.savepath, f'plan_{t}.png'),
+        #     samples.observations,
+        #     ncol=1
+        # )
     if t < diffusion.horizon and (t % K) == 0:
         mode,L_t = should_replan(diffusion, sequence,global_history, cond, plan_ptr, ls, lf, I)
     else:
@@ -230,11 +233,11 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
         sequence = samples.observations[0]
         # visualize the scratch replan
         rrtplan = np.expand_dims(sequence, axis=0)
-        renderer.composite(
-            join(args.savepath, f'plan_scratch_t{t}.png'),
-            rrtplan,
-            ncol=1
-        )
+        # renderer.composite(
+        #     join(args.savepath, f'plan_scratch_t{t}.png'),
+        #     rrtplan,
+        #     ncol=1
+        # )
         plan_ptr = 0
     elif mode == 'future':  
         print(f"[t={t}] Partial replanning (future)")  
@@ -258,11 +261,11 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
         print("next way point is", sequence[plan_ptr])  
         
         fplan = np.expand_dims(sequence, axis=0)  
-        renderer.composite(  
-            join(args.savepath, f'plan_future_t{t}.png'),  
-            fplan,  
-            ncol=1  
-        )
+        # renderer.composite(  
+        #     join(args.savepath, f'plan_future_t{t}.png'),  
+        #     fplan,  
+        #     ncol=1  
+        # )
         # plan_ptr = 0
     next_waypoint  = sequence[plan_ptr]        # [x,y,vx,vy]
 
@@ -270,7 +273,7 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
     action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
     if t == 100:
         print("Interfer starts")
-        offset = maze2d.teleport_agent(env, level='largetr=')
+        offset = maze2d.teleport_agent(env, level='medium')
         print(f"[t={t}] Teleported by {offset}")
         continue
     next_obs, reward, terminal, _ = env.step(action)
@@ -283,29 +286,30 @@ for t in range(env.max_episode_steps): #env.max_episode_steps
     ts.append(t)
     L_vals.append(L_t)
     # 5) Check for termination # FIXME not actually works
-    if terminal:
+    if maze2d.check_done(env):
         print(f"🏁 Terminated at step {t}, return={total_reward:.2f}")
-        break
+        end = time.time()
+        # break
     # for debuging (output current planning trajectory vs current rollouts)
     if t% K ==0:
         current_waypoint = np.expand_dims(sequence, axis=0)   # sequence is the H×obs_dim future‐patched plan
-        renderer.composite(
-                join(args.savepath, f'cur_wpt{t}.png'),
-                current_waypoint,
-                ncol=1
-            )
-        renderer.composite(
-                join(args.savepath, f'cur_rollout{t}.png'),
-                 np.array([rollout]),
-                ncol=1
-            )
+        # renderer.composite(
+        #         join(args.savepath, f'cur_wpt{t}.png'),
+        #         current_waypoint,
+        #         ncol=1
+        #     )
+        # renderer.composite(
+        #         join(args.savepath, f'cur_rollout{t}.png'),
+        #          np.array([rollout]),
+        #         ncol=1
+        #     )
 plot_loglikelihood(ts, L_vals, args.savepath)
 # 6) Final dump
-renderer.composite(
-    join(args.savepath, 'final_rollout.png'),
-    np.array([rollout]),
-    ncol=1
-)
+# renderer.composite(
+#     join(args.savepath, 'final_rollout.png'),
+#     np.array([rollout]),
+#     ncol=1
+# )
 with open(join(args.savepath, 'rollout.json'), 'w') as f:
     json.dump({
         'step':  t,
@@ -313,5 +317,8 @@ with open(join(args.savepath, 'rollout.json'), 'w') as f:
         'term':   terminal,
         'score':  env.get_normalized_score(total_reward)
     }, f, indent=2)
-
+if end == None:
+    end = time.time()
+time_taken = start - end
+print(f"Elapsed: {time_taken:.4f} s")
 print(f"Done. Steps={len(rollout)-1}, Return={total_reward:.2f},Score = {score:.2f}")
