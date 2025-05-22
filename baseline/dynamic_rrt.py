@@ -627,13 +627,13 @@ def main():
         grow_iters=400000
     )
     n_steps = 256 # FIXME should be args.n_steps
-    # renderer = load_diffusion_env( 
-    #     args.logbase,
-    #     args.dataset,
-    #     horizon=args.horizon,
-    #     n_steps= n_steps,
-    #     device=args.device
-    #     )
+    renderer = load_diffusion_env( 
+        args.logbase,
+        args.dataset,
+        horizon=args.horizon,
+        n_steps= n_steps,
+        device=args.device
+        )
     rollout = [obs.copy()]
     total_reward = 0.0
 
@@ -651,20 +651,20 @@ def main():
         #print("obs",obs)
         # print("t",t)
         # visualize
-        # if t % 100 == 0 or done:
+        if t % 100 == 0 or done:
             # rollout[0] = [ 2.65957033, 7.55172337  ,1.50555543,-0.14947117]
             # if t!= 0:
             #     rollout[1]=[-4,10,1.50555543,-0.14947117]
-            # renderer.composite(
-            #     join(args.savepath, f'cur_rollout{t}.png'),
-            #      np.array([rollout]),
-            #     ncol=1
-            # )
-            # renderer.composite(
-            #     join(args.savepath, f'cur_rrt_plan{t}.png'),
-            #      np.array([drrt.path]),
-            #     ncol=1
-            # )
+            renderer.composite(
+                join(args.savepath, f'cur_rollout{t}.png'),
+                 np.array([rollout]),
+                ncol=1
+            )
+            renderer.composite(
+                join(args.savepath, f'cur_rrt_plan{t}.png'),
+                 np.array([drrt.path]),
+                ncol=1
+            )
             #print('drrt path',drrt.path)
             #print('drrt vpath',drrt.vel_path)
             # waypoints = drrt.path[:t]

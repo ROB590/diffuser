@@ -4,6 +4,15 @@ import os
 import torch
 import random
 #Ensure reproductivity
+def within_bounds(pos, maze_arr):
+    """
+    pos: (x, y) tuple or array
+    maze_arr: numpy array giving the occupancy grid, shape = (height, width)
+    """
+    x, y = pos
+    height, width = maze_arr.shape
+    return (0 <= x < height-1) and (0 <= y < width-1)
+
 def ensure_seed():
     seed = 42
     os.environ['PYTHONHASHSEED']            = str(seed)
@@ -26,6 +35,7 @@ def step_with_action_noise(env, action, level):
     return env.step(np.clip(noisy_action, -env.action_space.high, env.action_space.high))
 
 def teleport_agent(env, level: str,seed = 42,max_attempts = 100):
+    # TODO must with in the environment
     np.random.seed(seed)   
     """
     Teleports the Maze2D agent to a different (x,y) position.
@@ -34,7 +44,7 @@ def teleport_agent(env, level: str,seed = 42,max_attempts = 100):
     original_state = env.unwrapped.sim.get_state()
     frac_map = {'small': 0.1, 'medium': 0.3, 'large': 0.6}
     f = frac_map[level]
-    max_extent = 5 # np.max(env.observation_space.high[:2])
+    max_extent = 3 # np.max(env.observation_space.high[:2])
     for _ in range(max_attempts):
         # sample random offset
         offset = (np.random.rand(2)*2 - 1) * f * max_extent
@@ -44,7 +54,7 @@ def teleport_agent(env, level: str,seed = 42,max_attempts = 100):
         sim_state.qpos[:2] += offset
         env.unwrapped.sim.set_state(sim_state)
         env.unwrapped.sim.forward()
-        if not in_collision(env,sim_state.qpos[:2]):
+        if not in_collision(env,sim_state.qpos[:2]) and within_bounds(sim_state.qpos[:2], env.unwrapped.maze_arr):
             print("debug tele",env.state_vector())
             print("Not in collision apply interfer")
             return offset  # found collision-free teleport
