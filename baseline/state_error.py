@@ -69,8 +69,9 @@ Ns = args.horizon
 #######################
 # Environment & Policy setup
 #######################
-env = datasets.load_environment(args.dataset)
-
+base_env = datasets.load_environment(args.dataset)
+env = maze2d.ExternalDisturbanceWrapper(env = base_env,disturb_type = "action")
+# env = maze2d.StartEndRandomWrapper(env = base_env)
 # Custom load of diffusion (to match your horizons)
 diff_exp = load_diffusion_manual(
     args.logbase,
@@ -154,11 +155,11 @@ for t in range(1600): #env.max_episode_steps
 
     ## can use actions or define a simple controller based on state predictions
     action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
-    if t == 100:
-        print("Interfer starts")
-        offset = maze2d.teleport_agent(env, level='medium')
-        print(f"[t={t}] Teleported by {offset}")
-        continue
+    # if t == 100:
+    #     print("Interfer starts")
+    #     offset = maze2d.teleport_agent(env, level='medium')
+    #     print(f"[t={t}] Teleported by {offset}")
+        # continue
     next_obs, reward, terminal, _ = env.step(action)
     total_reward += reward
     score = env.get_normalized_score(total_reward)

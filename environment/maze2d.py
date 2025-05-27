@@ -3,6 +3,7 @@ import numpy as np
 import os
 import torch
 import random
+import gym
 #Ensure reproductivity
 def within_bounds(pos, maze_arr):
     """
@@ -13,8 +14,8 @@ def within_bounds(pos, maze_arr):
     height, width = maze_arr.shape
     return (0 <= x < height-1) and (0 <= y < width-1)
 
-def ensure_seed():
-    seed = 42
+def ensure_seed(seed = 42):
+    seed = seed
     os.environ['PYTHONHASHSEED']            = str(seed)
     random.seed(seed)                       
     np.random.seed(seed)                    
@@ -26,6 +27,7 @@ def ensure_seed():
     #torch.use_deterministic_algorithms(True)
     return seed
 
+# External disturbance
 def step_with_action_noise(env, action, level):
     # Noise std fractions
     sigma_frac = {'small':0.1, 'medium':0.3, 'large':0.5}[level]
@@ -94,3 +96,154 @@ def in_collision(env, q=None, ground_names=None):
 
 def check_done(env,tol = 0.15):  #from reward logic of maze2d
     return np.linalg.norm(env.state_vector()[:2]- env._target) < tol
+
+
+# Environment Changes function
+class ExternalDisturbanceWrapper(gym.Wrapper):
+    """
+    Two‐mode disturbance over each window:
+      • Teleport (‘teleop’) exactly teleop_count times
+      • Action‐noise bursts of length 20 steps, N bursts per window
+    After window_size steps, resample schedules.
+    Flags in info: 'teleop_disturbance', 'action_disturbance'
+    """
+    def __init__(
+        self,
+        env,
+        disturb_type: str = 'both',            # 'teleop', 'action', or 'both'
+        window_size: int = 400,
+        teleop_count: int = 2,
+        action_burst_count: int = 10,          # how many bursts in a window
+        burst_duration: int = 30,              # length of each burst
+        noise_level: float = 0.8
+    ):
+        super().__init__(env)
+        assert disturb_type in ('teleop','action','both')
+        self.disturb_type       = disturb_type
+        self.window_size        = window_size
+        self.teleop_count       = teleop_count
+        self.action_burst_count = action_burst_count
+        self.burst_duration     = burst_duration
+        self.noise_level        = noise_level
+
+        self.step_idx           = 0
+        self.teleop_steps       = []
+        self.burst_starts       = []
+        self.current_noise      = None
+        self.steps_left_in_burst= 0
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self.step_idx = 0
+        idxs = np.arange(self.window_size)
+
+        # schedule teleops
+        if self.disturb_type in ('teleop','both'):
+            self.teleop_steps = list(np.random.choice(
+                idxs, size=self.teleop_count, replace=False
+            ))
+        else:
+            self.teleop_steps = []
+
+        # schedule action‐noise bursts
+        if self.disturb_type in ('action','both'):
+            self.burst_starts = list(np.random.choice(
+                idxs, size=self.action_burst_count, replace=False
+            ))
+        else:
+            self.burst_starts = []
+
+        # clear any ongoing burst
+        self.current_noise       = None
+        self.steps_left_in_burst = 0
+
+        return obs
+
+    def step(self, action):
+        info = {}
+        do_teleop = self.step_idx in self.teleop_steps
+        do_action = self.step_idx in self.burst_starts
+
+        # Teleport disturbance
+        if do_teleop:
+            offset = teleport_agent(self.env, level='medium')
+            info['teleop_disturbance'] = offset
+
+        # Start a new noise burst if we hit a burst start
+        if do_action:
+            self.steps_left_in_burst = self.burst_duration
+            sigma = self.noise_level * self.action_space.high
+            # sample one fixed noise vector
+            self.current_noise = np.random.randn(*action.shape) * sigma
+
+        # If we’re in an active burst, apply the same noise
+        if self.steps_left_in_burst > 0:
+            action = action + self.current_noise
+            action = np.clip(action,
+                             -self.action_space.high,
+                              self.action_space.high)
+            info['action_disturbance'] = True
+            self.steps_left_in_burst -= 1
+
+        obs, reward, done, env_info = self.env.step(action)
+
+        # advance and wrap window
+        self.step_idx = (self.step_idx + 1) % self.window_size
+
+        env_info.update(info)
+        return obs, reward, done, env_info
+
+    @property
+    def _target(self):
+        return self.env._target
+
+class StartEndRandomWrapper(gym.Wrapper):
+    """
+    On reset(), picks a random collision‐free start and goal within the maze.
+    Flags 'start_randomized' and 'goal_randomized' in info.
+    """
+    def __init__(self, env, max_attempts=1000):
+        super().__init__(env)
+        self.max_attempts = max_attempts
+
+    def _sample_free(self):
+        maze = self.unwrapped.maze_arr
+        H, W = maze.shape
+        for _ in range(self.max_attempts):
+            x = np.random.uniform(0, H)
+            y = np.random.uniform(0, W)
+            pos = np.array([x, y], dtype=np.float32)
+            if within_bounds(pos, maze) and not in_collision(self.env, pos):
+                return pos
+        raise RuntimeError("Failed to sample a collision-free point")
+
+    def reset(self, **kwargs):
+        # 1) Sample a new start position
+        new_start = self._sample_free()
+        state = self.unwrapped.sim.get_state()
+        state.qpos[:2] = new_start
+        self.unwrapped.sim.set_state(state)
+        self.unwrapped.sim.forward()
+
+        # 2) Sample a new goal position
+        new_goal = self._sample_free()
+        self.env._target = new_goal.copy()
+
+        # 3) Perform underlying reset (to get correct obs)
+        obs = self.env.reset(**kwargs)
+        self.new_start = new_start
+        self.new_goal = new_goal
+        # 4) Return obs and info flags
+        info = {
+            'start_randomized': new_start,
+            'goal_randomized':  new_goal
+        }
+        return obs
+
+    def step(self, action):
+        # Pass through, no change during episode
+        obs, reward, done, info = self.env.step(action)
+        return obs, reward, done, info
+    @property
+    def _target(self):
+        return self.env._target
