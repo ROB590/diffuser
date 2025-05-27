@@ -1,9 +1,15 @@
+#!/usr/bin/env python
 import os
 import json
 import pickle
+import time
 from os.path import join
 
 import numpy as np
+import torch
+import gym
+import imageio
+
 import matplotlib.pyplot as plt
 
 from diffuser.guides.policies import Policy
@@ -11,13 +17,20 @@ import diffuser.datasets as datasets
 import diffuser.utils as utils
 from diffuser.models import TemporalUnet, GaussianDiffusion
 from diffuser.utils.serialization import DiffusionExperiment, get_latest_epoch
-import torch
+
+# your helper functions / wrappers
 from environment import maze2d
-import time
+from environment.maze2d import (
+    load_custom_env,
+    Maze2dRenderer,
+    within_bounds,
+    in_collision,
+    teleport_agent,
+)
+
 #######################
-# Helper functions
+# Helper: load diffusion
 #######################
-seed = maze2d.ensure_seed()
 def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest', device='cuda'):
     base = os.path.join(logbase, dataset_name, 'diffusion', f'H{horizon}_T{n_steps}')
     cfg_names = ['dataset', 'render', 'model', 'diffusion', 'trainer']
@@ -44,35 +57,59 @@ def load_diffusion_manual(logbase, dataset_name, horizon, n_steps, epoch='latest
         dataset_obj, renderer, model, diffusion, trainer.ema_model, trainer, epoch
     )
 
-#######################
-# Replanning determinator
-#######################
-# 1) Hyperparameters for adaptive replanning
 ts = []       # list of timesteps
 L_vals = []   # corresponding log‐likelihood values
 horizon = 256   #trajectory length
 n_steps = 256   #diffusion steps
-
-
 start = time.time()
 end = None
 #######################
-# Argument parsing
+# CLI & args
 #######################
 class Parser(utils.Parser):
-    dataset: str = 'maze2d-large-v1'
-    config:  str = 'config.maze2d'
+    dataset:        str = 'maze2d-large-v1'
+    config:         str = 'config.maze2d'
+    logbase:        str = './logs'
+    diffusion_epoch:str = 'latest'
+    device:         str = 'cuda'
+    batch_size:     int = 16
+    savepath:       str = './results'
+    custom_env:     str = 'maze-editv0-large'   # set to 'maze-editv1-large' for custom D4RL maze
 
 args = Parser().parse_args('plan')
+os.makedirs(args.savepath, exist_ok=True)
 Ns = args.horizon
+#######################
+# Seed
+#######################
+seed = maze2d.ensure_seed(42)
 
 #######################
-# Environment & Policy setup
+# Environment setup
 #######################
-env = datasets.load_environment(args.dataset)
-#env = maze2d.ExternalDisturbanceWrapper(env = base_env,disturb_type = "action")
-# env = maze2d.StartEndRandomWrapper(env = base_env)
-# Custom load of diffusion (to match your horizons)
+if args.custom_env:
+    print("→ loading custom env:", args.custom_env)
+    base_env = load_custom_env(args.custom_env, max_episode_steps=1600)
+    # instantiate renderer early so we can extract its goal_position
+    renderer = Maze2dRenderer(args.custom_env)
+    # # grid coords: (row, col)
+    # gy, gx = renderer.goal_position
+    # # convert to continuous [x, y]
+    # continuous_goal = np.array([gx + 0.5, gy + 0.5], dtype=np.float32)
+    # # assign to env so env._target exists
+    # base_env._target = continuous_goal
+    env = base_env
+    env._target = base_env._target
+else:
+    # raise RuntimeError('not correct loop')
+    env = datasets.load_environment(args.dataset)
+    # env = maze2d.ExternalDisturbanceWrapper(env=base_env, disturb_type="action")
+
+#######################
+# Diffusion & renderer setup
+#######################
+horizon = args.horizon
+n_steps = 256
 diff_exp = load_diffusion_manual(
     args.logbase,
     args.dataset,
@@ -83,9 +120,13 @@ diff_exp = load_diffusion_manual(
 )
 diffusion = diff_exp.ema
 dataset   = diff_exp.dataset
-renderer  = diff_exp.renderer
-policy    = Policy(diffusion, dataset.normalizer)
-print(f"Evaluating with horizon={horizon}, n_steps={n_steps}")
+
+# If using the standard D4RL env, use its renderer; otherwise, we already built our custom renderer above
+if not args.custom_env:
+    renderer = diff_exp.renderer
+
+policy = Policy(diffusion, dataset.normalizer)
+print(f"→ Evaluating with horizon={horizon}, n_steps={n_steps}")
 
 #######################
 # Main control loop
@@ -162,7 +203,7 @@ for t in range(1600): #env.max_episode_steps
         # continue
     next_obs, reward, terminal, _ = env.step(action)
     total_reward += reward
-    score = env.get_normalized_score(total_reward)
+    #score = env.get_normalized_score(total_reward)
     rollout.append(next_obs.copy())
     global_history.append(next_obs.copy())
     # 4) Advance the pointer AFTER stepping
@@ -197,11 +238,11 @@ with open(join(args.savepath, 'rollout.json'), 'w') as f:
         'step':  t,
         'return': total_reward,
         'term':   terminal,
-        'score':  env.get_normalized_score(total_reward)
+        # 'score':  env.get_normalized_score(total_reward)
     }, f, indent=2)
 if end == None:
     end = time.time()
 time_taken = start - end
 print(f"Elapsed: {time_taken:.4f} s")
-print(f"Done. Steps={len(rollout)-1}, Return={total_reward:.2f},Score = {score:.2f}")
+print(f"Done. Steps={len(rollout)-1}, Return={total_reward:.2f}")
 
