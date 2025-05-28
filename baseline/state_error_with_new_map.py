@@ -82,7 +82,7 @@ Ns = args.horizon
 #######################
 # Seed
 #######################
-seed = maze2d.ensure_seed(42)
+seed = maze2d.ensure_seed(1)
 
 #######################
 # Environment setup
@@ -148,9 +148,17 @@ sequence     = None
 plan_ptr     = 0
 err_thresh = 0.3 # state error threshold
 global_history = rollout.copy()
+disturb_flag = False
 for t in range(1600): #env.max_episode_steps
     state = env.state_vector().copy()
-
+    if state[0]>3 and state[0]<4  and state[1]>3 and state[1]<4 and disturb_flag == False:
+        print("disturbed!")
+        disturb_flag = True
+        sim_state = env.unwrapped.sim.get_state()
+        sim_state.qpos[:2] = [4,3]
+        env.unwrapped.sim.set_state(sim_state)
+        env.unwrapped.sim.forward()
+        continue
     # 1) init plan
     if t == 0:
         print(f"[t={t}] Init from start {state[:2]} to target {target}")
